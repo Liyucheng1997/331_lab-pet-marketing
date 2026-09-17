@@ -1,0 +1,17 @@
+data/
+__pycache__/
+*.log
+codex-probe.txt
+.env
+.env.*
+!.env.example
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.db
+*.pid
+.venv/
+venv/
+.pytest_cache/
+.DS_Store
+Thumbs.db

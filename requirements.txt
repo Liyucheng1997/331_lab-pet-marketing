@@ -1,0 +1,3 @@
+# Web server and SQLite use the Python standard library.
+# Pillow is used to verify completed image dimensions.
+Pillow>=10
