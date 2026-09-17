@@ -1,3 +1,12 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PetOps Italia · 宠物电商工作台</title><link rel="stylesheet" href="/style.css"></head>
-<body><aside><a class="brand" href="/">P<span>PetOps<small>ITALIA WORKSPACE</small></span></a><div class="workspace">意大利线上业务 <span>本机</span></div><div class="nav-label">业务工作台</div><nav id="nav"></nav><div class="aside-bottom"><b>6,000 m²</b><p>让仓库里的好产品<br>走进意大利的每个家。</p><span class="tag">本地保存 · EUR €</span></div></aside><div class="shell"><header><span>工作空间 <i>/</i> <b id="crumb">数据调研</b></span><span class="local">ITALY <span class="flag">●</span> 本地工作台</span></header><main id="app"></main></div><dialog id="dialog"></dialog><div id="toast" role="status"></div><script src="/app.js"></script></body></html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PetOps Italia · 宠物电商工作台</title><link rel="icon" type="image/png" href="/assets/petops-logo.png"><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/workspace.css"></head>
+<body>
+<header class="app-header">
+  <div class="header-start"><button id="sidebar-toggle" class="icon-button" onclick="toggleSidebar()" aria-label="收起任务列表" aria-expanded="true" aria-controls="task-sidebar"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16M5.5 8h1M5.5 12h1"/></svg></button><a class="brand" href="/"><img class="brand-logo" src="/assets/petops-logo.png" alt="PetOps Logo"><span>PetOps<small>ITALIA</small></span></a></div>
+  <div class="header-context"><span>工作空间</span><span class="header-separator">/</span><b id="crumb">数据调研</b></div>
+  <div class="actions"><span class="local">本机工作台 · EUR</span><button class="settings-button" onclick="go('settings')">设置</button></div>
+</header>
+<aside id="task-sidebar" aria-label="任务列表"><div class="sidebar-heading"><h2>任务列表</h2><span id="active-count" class="pill-number">0</span></div><p class="sidebar-description">制作中的任务与待办，集中查看。</p><div class="task-filters" role="group" aria-label="任务筛选"><button id="filter-active" onclick="setTaskFilter('active')">进行中</button><button id="filter-all" onclick="setTaskFilter('all')">全部任务</button></div><div id="task-list"></div><div class="sidebar-foot"><span>本地保存</span><span>6,000 m² 仓库</span></div></aside>
+<div class="shell"><div class="workflow-header"><div class="workflow-caption"><span>商品上新流程</span><small>从发现好产品，到复盘经营结果</small></div><nav id="nav" aria-label="五步工作流程"></nav></div><main id="app"></main></div>
+<dialog id="dialog"></dialog><div id="toast" role="status"></div><script src="/calendar.js"></script><script src="/app.js"></script>
+</body></html>

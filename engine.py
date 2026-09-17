@@ -199,7 +199,11 @@ class Jobs:
         threading.Thread(target=self.run,args=(j,p),daemon=True).start()
         return j
 
-    def update(self,j,**kw): j.update(kw);self.save('jobs',j)
+    def update(self,j,**kw):
+        stamp=now()
+        if kw.get('status')=='running' and not j.get('startedAt'):j['startedAt']=stamp
+        if kw.get('status') in ['completed','failed','interrupted','needs_info','no_results']:j['finishedAt']=stamp
+        j.update(kw,updatedAt=stamp);self.save('jobs',j)
 
     def save_product_result(self,current,baseline):
         # Preserve human edits made while a long-running job was finishing.

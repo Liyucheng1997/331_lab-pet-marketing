@@ -3,6 +3,7 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 import os, json, sqlite3, uuid, datetime as dt, mimetypes, urllib.parse, base64, io, csv, zipfile, threading
 import engine
+import progress
 from contextlib import contextmanager
 
 ROOT = Path(__file__).resolve().parent
@@ -64,7 +65,9 @@ def state():
         p['barcodeCheck']=engine.barcode_status(p.get('ean'))
         if not p.get('researchStatus') and p.get('researchedAt') and not p.get('offers'):
             p['researchStatus']='needs_info' if engine.placeholder_name(p.get('nameZh')) or not p.get('nameZh') else 'no_quotes'
-    return {'products':products, 'jobs':records('jobs'), 'sales':records('sales'), 'platforms':PLATFORMS,'settings':s,'capabilities':engine.capabilities()}
+    jobs=records('jobs')
+    for job in jobs:job['progress']=progress.describe(job,DATA)
+    return {'products':products, 'jobs':jobs, 'sales':records('sales'), 'platforms':PLATFORMS,'settings':s,'capabilities':engine.capabilities()}
 
 def mutate(path,d):
     if path=='/api/products':
