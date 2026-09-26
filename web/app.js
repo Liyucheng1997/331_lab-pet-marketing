@@ -1,144 +1,533 @@
-const $=s=>document.querySelector(s),esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const money=v=>v==null?'—':new Intl.NumberFormat('it-IT',{style:'currency',currency:'EUR'}).format(v);
-const today=()=>{const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`};
-let S={products:[],jobs:[],sales:[],settings:{},capabilities:{}},view='research',selected=new Set(),search='',studioId='',assetTab='all',chartType='bar',filters={platform:'',start:'',end:''};
-const sellers=['Amazon','TikTok Shop','AliExpress'],platforms=[...sellers,'Zooplus','Arcaplanet'];
-const navs=[['research','⌕','数据调研'],['schedule','▦','选品排期'],['studio','▧','AI 创作工坊'],['uploads','☑','上架清单'],['analytics','▥','经营分析'],['settings','⚙','连接与设置']];
-let taskFilter='active',jobDialogId=null,pollBusy=false;
-let sidebarHidden=(()=>{try{const saved=localStorage.getItem('petops.sidebarHidden');return saved===null?window.matchMedia('(max-width:760px)').matches:saved==='true'}catch{return false}})();
-const jobNames={research:'五平台调研',images:'九宫格制作',edit:'局部修改'};
-const jobStatuses={queued:'排队中',running:'处理中',completed:'已完成',needs_info:'待补资料',no_results:'暂无报价',failed:'失败',interrupted:'已中断'};
-function toggleSidebar(){sidebarHidden=!sidebarHidden;try{localStorage.setItem('petops.sidebarHidden',String(sidebarHidden))}catch{}applySidebar()}
-function applySidebar(){document.body?.classList.toggle('sidebar-hidden',sidebarHidden);const toggle=$('#sidebar-toggle');toggle?.setAttribute('aria-expanded',String(!sidebarHidden));toggle?.setAttribute('aria-label',sidebarHidden?'展开任务列表':'收起任务列表');const rail=$('#task-sidebar');if(rail)rail.inert=sidebarHidden}
-function setTaskFilter(filter){taskFilter=filter;renderChrome()}
-function renderChrome(){
- const subtitles=['识别与比价','安排每日上新','图片与文案','逐个平台发布','销售与利润'];
- $('#nav').innerHTML=navs.slice(0,5).map(([v,,title],i)=>`<button class="${view===v?'active':''}" ${view===v?'aria-current="page"':''} onclick="go('${v}')"><span class="step-number">${i+1}</span><span class="step-copy"><b>${title}</b><small>${subtitles[i]}</small></span></button>`).join('');
- applySidebar();renderTaskRail();
-}
-function renderTaskRail(){
- const active=S.jobs.filter(j=>['running','queued'].includes(j.status)),attention=S.jobs.filter(j=>['failed','interrupted','needs_info','no_results'].includes(j.status));
- $('#active-count').textContent=active.length;
- $('#filter-active').classList.toggle('active',taskFilter==='active');$('#filter-all').classList.toggle('active',taskFilter==='all');
- const ordered=taskFilter==='active'?active:[...active,...attention,...S.jobs.filter(j=>j.status==='completed')].slice(0,25);
- const planned=S.products.filter(p=>p.scheduledDate&&!p.assetsReady&&!active.some(j=>j.productId===p.id)).sort((a,b)=>a.scheduledDate.localeCompare(b.scheduledDate));
- let html=ordered.map(j=>{const p=product(j.productId),pg=j.progress;return `<button class="rail-task ${j.status==='running'?'running':''}" onclick="showJob('${j.id}')"><div class="rail-task-top"><span>${jobNames[j.kind]||'任务'}</span>${tag(jobStatuses[j.status]||j.status,j.status==='completed'?'green':['running','queued'].includes(j.status)?'':'orange')}</div><strong>${esc(p?.nameZh&&!p.nameZh.startsWith('未识别')?p.nameZh:j.sku)}</strong><p>${esc(pg?.label||j.message)}</p>${progressMarkup(j,true)}</button>`}).join('');
- if(planned.length)html+=`<div class="rail-label">待制作 · ${planned.length}</div>`+planned.slice(0,12).map(p=>`<button class="rail-task" onclick="openStudio('${p.id}')"><div class="rail-task-top"><span>计划制作</span><span>${esc(p.scheduledDate)}</span></div><strong>${esc(p.nameZh||p.nameIt||p.sku)}</strong><p>${esc(p.sku)} · 等待开始</p></button>`).join('');
- if(!html)html=`<div class="rail-empty"><b>${taskFilter==='active'?'暂时没有进行中的任务':'还没有任务'}</b><p>发起调研、安排制作或生成图片后，进度会显示在这里。</p>${S.jobs.length?'<button class="small" onclick="setTaskFilter(\'all\')">查看历史任务</button>':''}</div>`;
- $('#task-list').innerHTML=html;
-}
-function elapsedLabel(seconds){if(seconds==null)return '';if(seconds<60)return seconds+' 秒';return Math.floor(seconds/60)+' 分 '+seconds%60+' 秒'}
-function progressMarkup(j,compact=false){
- const pg=j.progress||{percent:j.status==='completed'?100:0,label:j.status==='queued'?'等待执行':'等待阶段信息',phase:0,indeterminate:j.status==='running'};
- const percent=Math.max(0,Math.min(100,Number(pg.percent)||0));const waiting=j.status==='queued',done=['completed','needs_info','no_results'].includes(j.status),error=['failed','interrupted'].includes(j.status);
- const aria=pg.indeterminate?'':`aria-valuenow="${percent}"`;
- const bar=`<div class="progress-track ${pg.indeterminate?'indeterminate':''} ${error?'progress-error':''}" role="progressbar" aria-label="${esc(jobNames[j.kind]+'：'+pg.label)}" aria-valuemin="0" aria-valuemax="100" ${aria}><div class="progress-fill" style="width:${pg.indeterminate?'35':percent}%"></div></div>`;
- const meta=`<div class="progress-meta"><span>${waiting?'等待前面的任务':elapsedLabel(pg.elapsedSeconds)?(done||error?'用时 ':'已运行 ')+elapsedLabel(pg.elapsedSeconds):done?'任务已结束':'进度依据实际输出'}</span><span>${pg.indeterminate?'处理中':percent+'%'}</span></div>`;
- if(compact)return bar+meta;
- const phases=j.kind==='images'?['准备资料','生成九宫格','切割子图','高清化','验收输出']:[];
- return `<div class="job-progress"><b>${esc(pg.label)}</b>${bar}${meta}${phases.length?`<div class="phase-list">${phases.map((s,i)=>`<div class="phase ${pg.phase>i?'done':pg.phase===i&&!error?'current':''}"><i>${pg.phase>i?'✓':String(i+1).padStart(2,'0')}</i>${s}</div>`).join('')}</div>`:''}${!done&&!compact?'<p class="job-dialog-note">百分比表示已到达的制作阶段；生成期间可能保持不变，不代表停止。</p>':''}</div>`;
-}
-function showJob(id){const j=S.jobs.find(x=>x.id===id);if(!j)return;modal('任务详情',`<div class="job-dialog-summary"><div><h2>${esc(j.sku)}</h2><p>${jobNames[j.kind]} · ${esc(new Date(j.createdAt).toLocaleString())}</p></div>${tag(jobStatuses[j.status],j.status==='completed'?'green':'orange')}</div>${progressMarkup(j)}<p>${esc(j.message)}</p><div class="actions" style="margin-top:20px"><button class="primary" onclick="$('#dialog').close();openStudio('${j.productId}')">进入创作工坊</button>${j.folder?`<a target="_blank" href="/files/${esc(j.folder.replaceAll('\\','/'))}/events.jsonl">查看详细日志 ↗</a>`:''}</div>`);jobDialogId=id}
-function liveProductMarkup(id){const j=S.jobs.find(j=>j.productId===id&&['running','queued'].includes(j.status))||S.jobs.find(j=>j.productId===id&&['images','edit'].includes(j.kind));return j?progressMarkup(j):''}
-function renderLiveSlots(){document.querySelectorAll('[data-live-product]').forEach(el=>el.innerHTML=liveProductMarkup(el.dataset.liveProduct));document.querySelectorAll('[data-live-job]').forEach(el=>{const j=S.jobs.find(j=>j.id===el.dataset.liveJob);if(j)el.innerHTML=progressMarkup(j)})}
-const product=id=>S.products.find(p=>p.id===id);
-const safeUrl=v=>{try{const u=new URL(v,location.origin);return ['http:','https:'].includes(u.protocol)?u.href:''}catch{return ''}};
-function toast(text){$('#toast').textContent=text;$('#toast').style.display='block';clearTimeout(window.toastTimer);window.toastTimer=setTimeout(()=>$('#toast').style.display='none',4200)}
-async function api(path,data){const r=await fetch('/api/'+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});const j=await r.json();if(!r.ok)throw Error(j.error||'操作失败');return j}
-async function act(path,data,msg='已保存'){try{const r=await api(path,data);await refresh();toast(msg);return r}catch(e){toast(e.message);return null}}
-async function refresh(redraw=true){try{const r=await fetch('/api/state');if(!r.ok)throw Error('无法连接本地服务');S=await r.json();if(redraw)render()}catch(e){toast(e.message)}}
-function go(v){view=v;search='';render();location.hash=v}
-function render(){renderChrome();$('#crumb').textContent=navs.find(n=>n[0]===view)[2];$('#app').className=['research','schedule','uploads'].includes(view)?'operational-view':'';$('#app').innerHTML=({research,schedule,studio,uploads,analytics,settings}[view])();renderLiveSlots()}
-function head(kicker,title,desc,actions=''){return `<div class="page-top"><div><div class="eyebrow">${kicker}</div><h1>${title}</h1><p>${desc}</p></div><div class="actions">${actions}</div></div>`}
-function stat(label,val,note){return `<div class="stat" title="${esc(note)}"><label>${label}</label><strong>${val}</strong><small>${note}</small></div>`}
-function empty(title,desc,action=''){return `<div class="empty"><div class="empty-icon">◇</div><strong>${title}</strong><p>${desc}</p>${action}</div>`}
-function tag(t,cls=''){return `<span class="tag ${cls}">${esc(t)}</span>`}
-function img(p,large=false){const src=p.reference?'/files/'+p.reference:safeUrl(p.cover);return src?`<img class="thumb ${large?'large':''}" src="${esc(src)}" alt="${esc(p.nameZh||p.sku)}" referrerpolicy="no-referrer" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'thumb',textContent:'图片失效'}))">`:`<span class="thumb ${large?'large':''}">待上传</span>`}
-function productCell(p){return `<div class="product-cell">${img(p)}<div><strong>${esc(p.nameZh||p.nameIt||p.sku)}</strong><p>${esc(p.nameIt||'意大利语名称待补充')}</p><p class="mono">${esc(p.sku)}</p></div></div>`}
-function field(name,label,val='',type='text',extra=''){return `<div class="field"><label for="f-${name}">${label}</label><input id="f-${name}" name="${name}" type="${type}" value="${esc(val??'')}" ${extra}></div>`}
-function textfield(name,label,val='',extra=''){return `<div class="field ${extra}"><label for="f-${name}">${label}</label><textarea id="f-${name}" name="${name}">${esc(val||'')}</textarea></div>`}
-function selectfield(name,label,options,value=''){return `<div class="field"><label for="f-${name}">${label}</label><select id="f-${name}" name="${name}">${options.map(o=>{const [v,t]=Array.isArray(o)?o:[o,o];return `<option value="${esc(v)}" ${v===value?'selected':''}>${esc(t)}</option>`}).join('')}</select></div>`}
-function modal(title,body){jobDialogId=null;$('#dialog').innerHTML=`<div class="page-top"><h1>${title}</h1><button type="button" aria-label="关闭" onclick="$('#dialog').close()">×</button></div>${body}`;if(!$('#dialog').open)$('#dialog').showModal()}
-function finishButtons(label='保存'){return `<div class="actions full" style="justify-content:flex-end;margin-top:10px"><button type="button" onclick="$('#dialog').close()">取消</button><button class="primary" type="submit">${label}</button></div>`}
-async function submitForm(event,fn){event.preventDefault();const btn=event.target.querySelector('button[type=submit]');btn.disabled=true;try{await fn(Object.fromEntries(new FormData(event.target)))}catch(e){toast(e.message)}finally{btn.disabled=false}}
-const filteredProducts=()=>S.products.filter(p=>[p.sku,p.nameZh,p.nameIt,p.ean].join(' ').toLowerCase().includes(search.toLowerCase()));
-function selectOne(id,checked){checked?selected.add(id):selected.delete(id);const el=$('#selection-count');if(el)el.textContent=selected.size}
-function selectAll(checked){filteredProducts().forEach(p=>checked?selected.add(p.id):selected.delete(p.id));render()}
-function research(){return head('DISCOVER YOUR NEXT BESTSELLER','数据调研','从一个 SKU 开始，找到适合意大利市场的好产品。',`<button onclick="importDialog('products')">导入商品</button><button class="primary" onclick="editProduct()">＋ 添加 SKU</button>`)+`<div class="stats">${stat('仓库商品',S.products.length,'建立统一的商品档案')}${stat('已获得报价',S.products.filter(p=>p.offers.some(o=>o.price!=null)).length,'五个平台 · 来源可追溯')}${stat('已选品',S.products.filter(p=>p.selected).length,'进入排期，逐步测试')}${stat('待补充成本',S.products.filter(p=>p.cost==null).length,'补齐后自动计算目标售价')}</div><div class="card"><div class="card-head"><h2>商品调研库 <span class="pill-number">${S.products.length}</span></h2>${tag('意大利 · B2C','green')}</div><div class="toolbar"><input class="search" aria-label="搜索商品" value="${esc(search)}" placeholder="搜索 SKU、中文或意大利语名称" oninput="search=this.value;updateResearchRows()"><div class="actions"><span class="muted">已勾选 <b id="selection-count">${selected.size}</b></span><button class="small" onclick="batchResearch()">批量调研</button><button class="small primary" onclick="chooseProducts()">加入选品池</button><button class="small" onclick="download('/api/export?kind=research','竞品调研.csv')">导出</button></div></div><div id="research-rows">${researchRows(filteredProducts())}</div><div class="bottom-line"><span>Amazon.it / TikTok Shop / AliExpress / Zooplus / Arcaplanet</span><span>EUR €</span></div></div><div class="notice">报价区分同款、相似款与待核实。销量未公开时显示未知；市场报价和你的目标售价分别展示。内部 SKU 首次需要名称或条码辅助识别。</div>`}
-function researchRows(ps){return ps.length?`<div class="table-wrap"><table><thead><tr><th><input aria-label="全选商品" type="checkbox" onchange="selectAll(this.checked)"></th><th>商品 / SKU</th><th>成本 / 库存</th>${platforms.map(p=>`<th>${p}<br><small>价格 · 销量</small></th>`).join('')}<th>操作</th></tr></thead><tbody>${ps.map(p=>`<tr><td><input aria-label="选择 ${esc(p.sku)}" type="checkbox" ${selected.has(p.id)?'checked':''} onchange="selectOne('${p.id}',this.checked)"></td><td>${productCell(p)}${p.researchStatus==='needs_info'?tag('待补资料','orange'):p.researchStatus==='no_quotes'?tag('暂无报价','orange'):''}${p.selected?tag('已选品','green'):''}</td><td><strong>${money(p.cost)}</strong><p>${p.stock==null?'库存待补充':p.stock+' 件'}</p></td>${platforms.map(platform=>{const os=p.offers.filter(o=>o.platform===platform);const o=os.find(o=>o.match==='exact')||os[0];return `<td>${o?`<a href="${esc(safeUrl(o.url))}" target="_blank" rel="noreferrer">${o.currency==='EUR'?money(o.price):esc(o.price+' '+o.currency)}</a><p>${o.sold==null?'销量未知':esc(o.sold+' · '+o.period)}</p>${tag(o.match==='exact'?'同款':o.match==='similar'?'相似款':'待核实',o.match==='exact'?'green':'orange')}`:'<span class="muted">—</span><p>尚无报价</p>'}</td>`}).join('')}<td><button class="text-link" onclick="detail('${p.id}')">查看分析</button><p><button class="text-link" onclick="editProduct('${p.id}')">编辑</button></p></td></tr>`).join('')}</tbody></table></div>`:empty(S.products.length?'没有匹配的商品':'把第一个商品带上线',S.products.length?'换个关键词试试。':'添加 SKU、商品名称和参考图，开始五个平台的对比调研。',`<button class="primary" onclick="editProduct()">＋ 添加 SKU</button>`)}
-function updateResearchRows(){$('#research-rows').innerHTML=researchRows(filteredProducts())}
-function editProduct(id){const p=id?product(id):{};modal(id?'编辑商品档案':'添加 SKU',`<form id="product-form"><div class="form-grid">${field('sku','仓库 SKU *',p.sku,'text','required maxlength="80"')}<div>${field('ean','EAN / GTIN 条码',p.ean,'text','inputmode="numeric" oninput="showBarcodeHint(this.value)"')}<p class="compact" id="ean-hint">${esc(p.barcodeCheck?.message||'保留前导零；系统会检查条码结构，未收录时可用品牌、型号或包装图辅助。')}</p></div>${field('nameZh','中文名称',p.nameZh)}${field('nameIt','意大利语名称',p.nameIt)}${field('brand','品牌',p.brand)}${field('model','型号 / 货号',p.model)}${field('searchTerms','辅助关键词（中文或意大利语）',p.searchTerms)}${field('supplierUrl','供应商 / 品牌商品链接',p.supplierUrl,'url')}${field('category','品类',p.category)}${field('cost','单件进货成本 €（不含可抵扣税）',p.cost,'number','min="0" step="0.01"')}${field('stock','仓库库存',p.stock,'number','min="0" step="1"')}${field('dimensions','尺寸（如 45 × 35 × 15 cm）',p.dimensions)}${field('weight','重量（注明 g 或 kg）',p.weight)}${field('material','已核实材质',p.material)}<div class="field"><label for="reference-file">包装 / 商品实拍图（也用于识别商品）</label><input id="reference-file" type="file" accept="image/png,image/jpeg,image/webp"></div>${textfield('descriptionZh','中文简介',p.descriptionZh)}${textfield('descriptionIt','意大利语简介',p.descriptionIt)}${textfield('notes','内部备注',p.notes,'full')}<div class="notice full">EAN 查不到时补充品牌、型号或包装图；系统先识别商品，再比较五个平台。未知尺寸、重量、材质请留空。</div>${finishButtons()}</div></form>`);$('#product-form').onsubmit=e=>submitForm(e,async d=>{if(id)d.id=id;const r=await api('products',d);const file=$('#reference-file').files[0];if(file)await uploadReference(r.id,file);$('#dialog').close();await refresh();toast('商品已保存')})}
-async function uploadReference(id,file){if(file.size>15*1024*1024)throw Error('参考图最大 15MB');const data=await new Promise((ok,no)=>{const r=new FileReader();r.onload=()=>ok(r.result.split(',')[1]);r.onerror=no;r.readAsDataURL(file)});await api('reference',{id,data})}
-async function chooseProducts(){if(!selected.size)return toast('请先勾选商品');await act('select',{ids:[...selected],selected:true},'已加入选品池，可以安排每天的工作')}
-async function batchResearch(){if(!selected.size)return toast('请先勾选商品');let count=0;for(const id of selected){try{await api('jobs',{id,kind:'research'});count++}catch(e){toast(e.message)}}await refresh();toast(`${count} 个调研任务已加入队列，使用本地 Codex`)}
-async function startJob(id,kind,extra='',asset=''){const r=await act('jobs',{id,kind,extra,asset},'任务已提交；可在创作工坊查看进度');if(r&&$('#dialog').open)$('#dialog').close()}
-function showBarcodeHint(value){
- const code=value.normalize('NFKC').replace(/[\s-]/g,'');let message='未填写条码，可用商品名称、品牌或包装图识别。';
- if(code){if(!/^(?:[0-9]{8}|[0-9]{12}|[0-9]{13}|[0-9]{14})$/.test(code))message='需要 8、12、13 或 14 位数字，请保留前导零。';else{const sum=[...code.slice(0,-1)].reverse().reduce((n,c,i)=>n+Number(c)*(i%2===0?3:1),0);message=(10-sum%10)%10===Number(code.at(-1))?'结构校验通过；不代表网上已收录该商品。':'校验位不匹配，请核对实物上的完整条码。'}}
- const hint=$('#ean-hint');if(hint)hint.textContent=message;
-}
-function researchDiagnostics(p){
- const check=p.barcodeCheck,identity=p.identity,labels={found:'找到商品页',no_results:'未找到结果',blocked:'访问受限',needs_identity:'待识别商品'};
- const needed=p.researchStatus==='needs_info'||(!p.brand&&!p.nameZh&&!p.nameIt);
- return `<div class="notice"><b>${needed?'先识别商品，再进行比价':'条码与商品识别'}</b><p>${esc(check?.message||'可补充品牌、型号或包装图辅助检索。')}</p>${needed?'<p>请提供品牌＋名称／型号，或上传一张能看清品牌与商品文字的包装图。仅有 EAN 且未被网页收录时，无法可靠判断是哪件商品。</p>':''}${identity?`<p>${esc(identity.reason)}</p>${(identity.sources||[]).map((u,i)=>`<a href="${esc(safeUrl(u))}" target="_blank" rel="noreferrer">身份依据 ${i+1} ↗</a>`).join(' · ')}`:''}<button class="small" onclick="editProduct('${p.id}')">补充品牌、型号或包装图</button></div>${(p.platformResults||[]).length?`<div class="card pad"><h3>本次检索路径</h3>${p.platformResults.map(r=>`<div class="job"><b>${esc(r.platform)}</b> ${tag(labels[r.status]||'待核实',r.status==='found'?'green':'orange')}<p>${esc(r.reason)}</p><p class="compact">尝试的关键词：${esc((r.queries||[]).join(' / ')||'身份资料不足，尚未执行')}</p></div>`).join('')}</div>`:''}`;
-}
-function pricingTable(p){return `<div class="table-wrap"><table><thead><tr><th>平台</th><th>目标售价（含税）</th><th>单件贡献利润</th><th>利润率</th><th>同款报价</th></tr></thead><tbody>${sellers.map(s=>{const r=p.pricing[s];return `<tr><td>${s}</td><td>${money(r.price)}</td><td>${money(r.profit)}</td><td>${r.margin==null?'—':r.margin+'%'}</td><td>${money(r.market)}</td></tr>`}).join('')}</tbody></table></div>`}
-function detail(id){const p=product(id);modal('商品调研与选品建议',researchDiagnostics(p)+`<div class="product-cell" style="margin-bottom:20px">${img(p,true)}<div><h2>${esc(p.nameZh||p.sku)}</h2><p>${esc(p.nameIt||'待翻译')}</p><p class="mono">${esc(p.sku)} · EAN ${esc(p.ean||'待补充')}</p><div class="actions"><button class="primary small" onclick="startJob('${id}','research')">Codex 五平台调研</button><button class="small" onclick="offerDialog('${id}')">＋ 录入报价</button></div></div></div><h3>定价与利润测算</h3>${pricingTable(p)}<p class="compact">利润率按不含税收入计算；扣除进货、物流、平台费、广告及退货预留。未包含固定人工、仓租和所得税，属于贡献利润。费率为可调整假设。</p><div class="notice" style="margin-top:18px"><b>选品建议</b><p>${esc(p.advice||(!p.ean?'建议先补充条码或品牌规格，避免将相似商品误判为同款。':p.cost==null?'请补充成本再评估售价与利润。':'先对照同款市场报价与目标售价，小批量测试；暂无真实销量，不能可靠预测月销量。'))}</p>${(p.researchWarnings||[]).map(w=>`<p>· ${esc(w)}</p>`).join('')}</div><h3>全部来源记录</h3>${p.offers.length?p.offers.map(o=>`<div class="row"><div><b>${esc(o.platform)}</b> ${money(o.price)} ${tag(o.match==='exact'?'同款':o.match==='similar'?'相似款':'待核实')}<p>${esc(o.title)} · ${o.sold==null?'销量未知':esc(o.sold+' / '+o.period)}</p><p class="compact">${esc(new Date(o.checkedAt).toLocaleString())} · ${o.source==='codex_web'?'Codex 网页观测':'手工录入'}</p><a target="_blank" rel="noreferrer" href="${esc(safeUrl(o.url))}">查看来源 ↗</a></div><button class="small" onclick="removeOffer('${id}','${o.id}')">移除</button></div>`).join(''):'<p>尚无记录。发起 Codex 调研或录入平台公开数据。</p>'}`)}
-async function removeOffer(id,offerId){if(await act('remove-offer',{id,offerId}))detail(id)}
-function offerDialog(id){modal('录入平台报价',`<form id="offer-form"><div class="form-grid">${selectfield('platform','平台',platforms)}${selectfield('match','商品匹配',[['unverified','待核实'],['exact','同款同规格'],['similar','相似商品']])}${field('title','页面商品名称')}${field('price','售价 €','','number','min="0.01" step="0.01"')}${field('sold','公开销量（未知留空）','','number','min="0"')}${field('period','销量口径（近 30 天 / 累计等）')}<div class="full">${field('url','平台商品来源链接 *','','url','required')}</div>${finishButtons()}</div></form>`);$('#offer-form').onsubmit=e=>submitForm(e,async d=>{await api('offer',{...d,id});await refresh();detail(id)})}
-function schedule(){const ps=S.products.filter(p=>p.selected),groups={};ps.filter(p=>p.scheduledDate).sort((a,b)=>a.scheduledDate.localeCompare(b.scheduledDate)).forEach(p=>(groups[p.scheduledDate]??=[]).push(p));return head('A LITTLE PROGRESS, EVERY DAY','选品排期','把选中的好产品，变成每天清晰可执行的工作。',`<button onclick="downloadSchedule()">导出排期</button><button class="primary" onclick="scheduleDialog()">＋ 自动排期</button>`)+`<div class="stats">${stat('选品池',ps.length,'调研库中加入的商品')}${stat('等待排期',ps.filter(p=>!p.scheduledDate).length,'按每日产能分配')}${stat('已安排',ps.filter(p=>p.scheduledDate).length,'支持 3 件 / 5 件 / 自定义')}${stat('已完成素材',ps.filter(p=>p.assetsReady).length,'进入上架准备')}</div><details class="pending-products"><summary><span>待安排商品 <b>${ps.filter(p=>!p.scheduledDate).length}</b></span><span class="pending-hint">展开查看</span></summary><div class="pending-content">${ps.filter(p=>!p.scheduledDate).length?ps.filter(p=>!p.scheduledDate).map(p=>`<div class="row">${productCell(p)}<button class="small" onclick="act('select',{ids:['${p.id}'],selected:false},'已移出选品池')">移出</button></div>`).join(''):'<p>没有等待排期的商品。在调研库勾选商品并加入选品池。</p>'}</div></details>${calendarView(ps)}`}
+'use strict';
+/* PetOps Studio — 作图 · 画廊 · 上架. Vanilla JS, talks to the local server only. */
+const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
+const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const money = v => v == null || v === '' ? '—' : new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR' }).format(v);
+const file = p => '/files/' + String(p || '').split('/').map(encodeURIComponent).join('/');
+const bytes = s => new TextEncoder().encode(s || '').length;
 
-function scheduleDialog(){const ps=S.products.filter(p=>p.selected);if(!ps.length)return toast('请先从调研库加入选品');modal('自动安排制作日程',`<form id="schedule-form"><div class="form-grid">${field('start','开始日期',today(),'date','required')}${field('capacity','每天制作数量',3,'number','required min="1" max="50" step="1"')}</div><label class="check"><input name="weekends" type="checkbox">包含周六、周日</label><div style="max-height:280px;overflow:auto;margin:20px 0">${ps.map(p=>`<label class="row"><span>${esc(p.sku)} · ${esc(p.nameZh||p.nameIt)} ${p.scheduledDate?tag(p.scheduledDate):''}</span><input type="checkbox" name="ids" value="${p.id}" ${!p.scheduledDate?'checked':''}></label>`).join('')}</div><p class="compact">已排期商品默认不改动。重新勾选可重排；系统会计入其他商品占用的每日容量。</p>${finishButtons('生成排期')}</form>`);$('#schedule-form').onsubmit=e=>submitForm(e,async d=>{const ids=[...$('#schedule-form').querySelectorAll('[name=ids]:checked')].map(x=>x.value);await api('schedule',{...d,ids,weekends:d.weekends==='on'});$('#dialog').close();await refresh();toast('排期已保存')})}
-function openStudio(id){studioId=id;go('studio')}
-function studio(){const p=product(studioId)||S.products.find(p=>p.scheduledDate)||S.products[0];if(p)studioId=p.id;return head('ONE PRODUCT. ONE CONSISTENT STORY.','AI 创作工坊','两张九宫格，十八张成品图。统一风格，按平台整理。',`<button onclick="go('settings')">风格与连接</button>`)+`<div class="studio-layout"><div><div class="card"><div class="card-head"><h2>商品队列</h2><span class="pill-number">${S.products.length}</span></div>${S.products.length?S.products.map(x=>`<button class="picker ${p.id===x.id?'active':''}" onclick="studioId='${x.id}';render()">${productCell(x)}<p>${x.scheduledDate?esc(x.scheduledDate)+' · ':''}${x.assetsReady?'素材已生成':'等待制作'}</p></button>`).join(''):'<div class="pad muted">先添加一个 SKU。</div>'}</div><div class="card pad"><h3>制作流程</h3><p class="compact">01 整理事实与实拍图<br>02 生成主图 / 详情九宫格<br>03 按三等分坐标裁剪<br>04 Real-ESRGAN ×4 高清化<br>05 检查并导出平台资料包</p></div></div><div>${p?studioProduct(p):`<div class="card">${empty('为商品建立一致的视觉语言','请先添加商品资料和一张清晰实拍图。',`<button class="primary" onclick="editProduct()">添加商品</button>`)}</div>`}<div class="card pad"><div class="actions" style="justify-content:space-between"><h2>任务中心</h2><button class="small" onclick="refresh()">刷新状态</button></div>${S.jobs.length?S.jobs.slice(0,30).map(jobCard).join(''):'<p style="margin-top:16px">尚无任务。调研与生图都通过本机 Codex 执行。</p>'}</div></div></div>`}
-function studioProductBase(p){const assets=(p.assets||[]).filter(a=>assetTab==='all'||a.group===assetTab||a.scope.includes(assetTab)),running=S.jobs.some(j=>j.productId===p.id&&['queued','running'].includes(j.status));return `<div class="card pad"><div class="card-head" style="padding:0 0 20px"><div><h2>${esc(p.nameZh||p.sku)}</h2><p>${esc(p.nameIt||p.sku)}</p></div>${tag(p.assetsReady?'素材待检查':'准备制作',p.assetsReady?'green':'')}</div><div class="product-cell">${img(p,true)}<div><p>商品实拍：${p.reference?'已上传':'未上传'}</p><p>名称、尺寸、材质以档案中的已核实资料为准。</p><button class="small" onclick="editProduct('${p.id}')">编辑资料 / 上传实拍</button></div></div><div class="field" style="margin-top:22px"><label for="extra-prompt">本次补充提示词</label><textarea id="extra-prompt" placeholder="例如：统一用意大利现代公寓场景，保持实物颜色和形状。"></textarea></div><div class="actions"><button class="primary" ${running?'disabled':''} onclick="startJob('${p.id}','images',$('#extra-prompt').value)">${running?'任务进行中':'生成两张九宫格 → 18 张高清图'}</button><button onclick="downloadBundle('${p.id}')">导出三平台资料包</button></div><p class="compact">使用本机 ChatGPT 登录的 Codex，不回退到付费生图 API。请求模型：Image Gen 2.5；具体版本尚未验证，以工具实际能力为准。</p></div><div class="card pad"><div class="card-head" style="padding:0 0 20px"><h2>图片素材</h2>${p.assetsReady?`<label class="check"><input type="checkbox" ${p.assetReview?'checked':''} onchange="act('review',{id:'${p.id}',approved:this.checked},'素材检查状态已保存')">我已检查图片，可用于上架</label>`:''}</div><div class="tabs">${[['all','全部'],['通用','通用图片'],['listing','商品图'],['detail','AliExpress 详情']].map(([v,l])=>`<button class="small ${assetTab===v?'active':''}" onclick="assetTab='${v}';render()">${l}</button>`).join('')}</div><div class="nine">${assets.length?assets.map(a=>`<button class="tile" onclick="editAsset('${p.id}','${esc(a.path)}')"><img src="/files/${esc(a.path)}" alt="${esc(a.name)}"><span>${esc(a.scope)}</span></button>`).join(''):['纯白主图','家居场景','核心卖点','工艺细节','尺寸信息','材质特写','使用说明','包装内容','补充展示'].map((l,i)=>`<div class="tile"><b>0${i+1}</b>${l}</div>`).join('')}</div><p class="compact">通用方图用于商品展示；TikTok 竖版营销素材需单独制作。分类为工作建议，上架前仍需核对当前类目规则。点击成品图可提出局部修改。</p></div><div class="card pad"><h3>意大利语上架信息</h3><p><b>${esc(p.nameIt||'意大利语名称待补充')}</b></p><p>${esc(p.descriptionIt||'调研完成后自动翻译已知资料，亦可手动填写。')}</p><div class="row"><span>尺寸</span><span>${esc(p.dimensions||'待核实')}</span></div><div class="row"><span>重量 / 材质</span><span>${esc(p.weight||'待核实')} / ${esc(p.material||'待核实')}</span></div><p class="compact">资料包包含 Amazon、TikTok Shop、AliExpress 三份独立意大利语 Markdown 文档，可复制到平台表单。</p></div>`}
-function jobCardBase(j){
- const labels={queued:'排队中',running:'处理中',completed:'已完成',needs_info:'待补资料',no_results:'暂无报价',failed:'失败',interrupted:'已中断'};
- return `<div class="job"><div class="actions" style="justify-content:space-between"><b>${esc(j.sku)} · ${{research:'五平台调研',images:'九宫格制作',edit:'局部修改'}[j.kind]}</b>${tag(labels[j.status],j.status==='completed'?'green':j.status==='failed'?'red':'orange')}</div><p>${esc(j.message)}</p><div class="actions"><small class="muted">${esc(new Date(j.createdAt).toLocaleString())}</small>${j.folder?`<a class="compact" target="_blank" href="/files/${esc(j.folder.replaceAll('\\','/'))}/events.jsonl">查看日志</a>`:''}${j.edited?`<a target="_blank" href="/files/${esc(j.edited.replaceAll('\\','/'))}">查看修改图 ↗</a><button class="small" onclick="act('adopt-edit',{id:'${j.productId}',jobId:'${j.id}'},'修改图已采用，请重新检查素材')">采用修改图</button>`:''}${['needs_info','no_results'].includes(j.status)?`<button class="small" onclick="editProduct('${j.productId}')">补充商品资料</button>`:''}${['failed','interrupted','needs_info','no_results'].includes(j.status)?`<button class="small" onclick="retryJob('${j.id}')">重试</button>`:''}</div></div>`;
+let S = { products: [], jobs: [], settings: {}, capabilities: {}, platforms: ['AliExpress', 'Amazon', 'TikTok Shop'], statuses: [], limits: {} };
+let route = { view: 'gallery', id: '', sub: '' };
+let ui = { search: '', galleryFilter: 'all', studioFilter: 'all', listingFilter: 'all', picked: new Set(), tasksOpen: false, box: null, saving: {}, pollBusy: false };
+
+const VIEWS = [['studio', '作图'], ['gallery', '画廊'], ['listing', '上架']];
+const SHORT = { AliExpress: 'AE', Amazon: 'AMZ', 'TikTok Shop': 'TT' };
+const KIND = { images: '九宫格作图', edit: '局部修改', copy: 'AI 文案', publish: '自动存草稿' };
+const JOB_STATUS = { queued: '排队中', running: '进行中', completed: '完成', failed: '失败', interrupted: '已中断', cancelled: '已取消' };
+const STATUS_TONE = { 待上架: '', 草稿: 'warn', 审核中: 'info', 已上架: 'ok', 被拒: 'bad', 已下架: 'mute' };
+const ACTIVE = j => ['queued', 'running'].includes(j.status);
+const PROMPT_CHIPS = ['意大利现代公寓场景', '猫咪互动', '狗狗户外', '温暖自然光', '极简白底', '突出材质细节'];
+
+const product = id => S.products.find(p => p.id === id);
+const jobsOf = (id, kind) => S.jobs.filter(j => j.productId === id && (!kind || j.kind === kind));
+const activeJob = (id, kinds = ['images', 'edit', 'copy', 'publish']) => S.jobs.find(j => j.productId === id && kinds.includes(j.kind) && ACTIVE(j));
+const displayName = p => p.nameZh || p.nameIt || p.sku;
+const cover = p => { const main = (p.assets || []).find(a => a.group === 'listing'); return main ? file(main.path) : p.references?.[0] ? file(p.references[0]) : '' };
+const listedCount = p => S.platforms.filter(s => p.listing?.[s]?.status === '已上架').length;
+const hasCopy = p => S.platforms.some(s => p.listing?.[s]?.title);
+
+/* ---------------------------------------------------------------- infrastructure */
+function toast(text, tone = '') { const t = $('#toast'); t.textContent = text; t.className = 'show ' + tone; clearTimeout(toast.timer); toast.timer = setTimeout(() => t.className = '', 4200) }
+async function api(path, data) {
+  const r = await fetch('/api/' + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+  const j = await r.json().catch(() => ({ error: '服务无响应' }));
+  if (!r.ok) throw Error(j.error || '操作失败');
+  return j;
 }
-function retryJob(id){const j=S.jobs.find(x=>x.id===id);startJob(j.productId,j.kind,j.extra,j.asset)}
-function editAsset(id,path){modal('局部二次修改',`<img src="/files/${esc(path)}" style="width:100%;max-height:420px;object-fit:contain" alt="待修改图片"><div class="field"><label for="edit-prompt">描述修改位置与内容</label><textarea id="edit-prompt" placeholder="例如：只将右上角的文字改为…，保留商品、背景和其他布局。"></textarea></div><p>原图保留，修改结果出现在任务中心。</p><button class="primary" onclick="if($('#edit-prompt').value.trim())startJob('${id}','edit',$('#edit-prompt').value,'${esc(path)}');else toast('请描述修改内容')">生成修改版本</button>`)}
-function downloadBundle(id){download('/api/bundle?id='+id,product(id).sku+'_平台资料包.zip')}
-function uploads(){const ps=S.products.filter(p=>p.assetsReady);return head('READY FOR THE NEXT STEP','上架清单','素材制作完成后，逐个平台完成上架与核对。')+`<div class="stats">${stat('待上传商品',ps.filter(p=>!sellers.every(s=>p.uploaded[s])).length,'至少一个平台尚未完成')}${sellers.map(s=>stat(s,ps.filter(p=>p.uploaded[s]).length,`已完成 / ${ps.length} 个商品`)).join('')}</div><div class="card"><div class="card-head"><h2>平台发布进度</h2>${tag('手动确认 · 不自动发布','green')}</div>${ps.length?`<div class="table-wrap"><table><thead><tr><th>商品</th><th>素材检查</th>${sellers.map(s=>`<th>${s}</th>`).join('')}<th>上架资料</th></tr></thead><tbody>${ps.map(p=>`<tr><td>${productCell(p)}</td><td>${tag(p.assetReview?'已检查':'待检查',p.assetReview?'green':'orange')}</td>${sellers.map(s=>`<td><label class="check"><input type="checkbox" ${p.uploaded[s]?'checked':''} ${p.assetReview?'':'disabled'} onchange="act('upload',{id:'${p.id}',platform:'${s}',done:this.checked},'上架状态已保存')">${p.uploaded[s]?'已上传':'待上传'}</label></td>`).join('')}<td><button class="text-link" onclick="downloadBundle('${p.id}')">下载资料包</button><p><button class="text-link" onclick="openStudio('${p.id}')">检查素材</button></p></td></tr>`).join('')}</tbody></table></div>`:empty('完成制作的商品会出现在这里','在创作工坊生成图片并检查后，即可依次完成三个平台的上传。')}</div>`}
-function filteredSales(){return S.sales.filter(s=>(!filters.platform||s.platform===filters.platform)&&(!filters.start||s.date>=filters.start)&&(!filters.end||s.date<=filters.end))}
-function sum(rows,k){return rows.reduce((n,s)=>n+(+s[k]||0),0)}
-function analytics(){const rows=filteredSales(),revenue=sum(rows,'revenue'),net=revenue-sum(rows,'vatAmount')-sum(rows,'refunds'),profit=sum(rows,'profit');return head('MAKE YOUR NEXT MOVE WITH DATA','经营分析','用实际订单复盘品类、销售与利润，让下一批选品更有依据。',`<button onclick="importDialog('sales')">导入销售 CSV</button><button class="primary" onclick="saleDialog()">＋ 录入销售</button>`)+`<div class="card pad"><div class="form-grid">${selectfield('filterPlatform','平台',[['','全部平台'],...sellers],filters.platform)}${field('filterStart','开始日期',filters.start,'date')}${field('filterEnd','结束日期',filters.end,'date')}<div class="actions"><button class="primary" onclick="applyFilters()">应用筛选</button><button onclick="download('/api/export?kind=sales','销售明细.csv')">导出全部</button><button onclick="exportReport()">老板报告</button></div></div></div><div class="stats">${stat('含税营业额',money(revenue),'实际导入 / 录入的销售数据')}${stat('销售件数',sum(rows,'units'),'筛选区间内的成交数量')}${stat('贡献利润',money(profit),'扣除所填全部可变费用与退款')}${stat('贡献利润率',net>0?(profit/net*100).toFixed(1)+'%':'—','分母：营收 − 销项税 − 退款')}</div><div class="card pad"><div class="card-head" style="padding:0 0 20px"><h2>${chartType==='line'?'每日销售趋势':chartType==='pie'?'品类营收占比':'平台营收与贡献利润'}</h2><div class="tabs" style="margin:0">${[['bar','柱状图'],['line','折线图'],['pie','饼图']].map(([v,l])=>`<button class="small ${chartType===v?'active':''}" onclick="chartType='${v}';render()">${l}</button>`).join('')}</div></div>${rows.length?chart(rows):empty('还没有这个区间的销售数据','录入实际销售和费用后自动生成可视化，不混入演示数字。')}</div><div class="card"><div class="card-head"><h2>销售明细</h2><span class="muted">${rows.length} 条</span></div>${rows.length?`<div class="table-wrap"><table><thead><tr><th>日期</th><th>SKU / 品类</th><th>平台</th><th>件数</th><th>含税营收</th><th>贡献利润</th><th></th></tr></thead><tbody>${rows.sort((a,b)=>b.date.localeCompare(a.date)).map(s=>`<tr><td>${esc(s.date)}</td><td>${esc(s.sku)}<p>${esc(s.category)}</p></td><td>${esc(s.platform)}</td><td>${s.units}</td><td>${money(s.revenue)}</td><td>${money(s.profit)}</td><td><button class="text-link danger" onclick="deleteSale('${s.id}')">删除</button></td></tr>`).join('')}</tbody></table></div>`:'<div class="pad muted">没有销售记录。</div>'}</div><div class="notice">贡献利润未扣固定人工、仓租和所得税。历史销量预测仅在至少 14 个日历天且 5 条记录后显示，使用最近 30 天日均销量外推。</div>${forecast(rows)}`}
-function applyFilters(){const f={platform:$('#f-filterPlatform').value,start:$('#f-filterStart').value,end:$('#f-filterEnd').value};if(f.start&&f.end&&f.start>f.end)return toast('开始日期不能晚于结束日期');filters=f;render()}
-function chart(rows){const colors=['#7c956d','#cd8c53','#a8b69a','#bca184','#647b59'];const W=920,H=260,left=60,bottom=220,top=22;
- if(chartType==='pie'){const g={};rows.forEach(s=>g[s.category]=(g[s.category]||0)+s.revenue);const total=Object.values(g).reduce((a,b)=>a+b,0);if(!total)return '<p>营收为零，无法计算占比。</p>';let off=0;const entries=Object.entries(g).sort((a,b)=>b[1]-a[1]);const h=Math.max(H,entries.length*27+40);return `<svg class="chart" style="height:${h}px" viewBox="0 0 ${W} ${h}" role="img" aria-label="品类营收占比">${entries.map(([k,v],i)=>{const pct=v/total*100,part=`<circle cx="210" cy="130" r="84" fill="none" stroke="${colors[i%5]}" stroke-width="32" pathLength="100" stroke-dasharray="${pct} ${100-pct}" stroke-dashoffset="${-off}" transform="rotate(-90 210 130)"><title>${esc(k)} ${money(v)} (${pct.toFixed(1)}%)</title></circle><text x="380" y="${35+i*27}" font-size="14" fill="${colors[i%5]}">${esc(k)} · ${money(v)} · ${pct.toFixed(1)}%</text>`;off+=pct;return part}).join('')}<text x="210" y="125" text-anchor="middle" fill="#697165" font-size="13">总营业额</text><text x="210" y="151" text-anchor="middle" font-size="21" fill="#303b32">${money(total)}</text></svg>`}
- const g={};rows.forEach(s=>{const key=chartType==='line'?s.date:s.platform;g[key]??={r:0,p:0};g[key].r+=s.revenue;g[key].p+=s.profit});const entries=Object.entries(g).sort(([a],[b])=>a.localeCompare(b)),vals=entries.flatMap(([,x])=>[x.r,x.p]),max=Math.max(1,...vals),min=Math.min(0,...vals),y=v=>top+(max-v)/(max-min)*(bottom-top),base=y(0),step=(W-left-25)/entries.length;
- let svg=`<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="营收与贡献利润">`;for(let i=0;i<5;i++){const v=min+(max-min)*i/4;svg+=`<line x1="${left}" y1="${y(v)}" x2="900" y2="${y(v)}" stroke="#e2e5d9"/><text x="50" y="${y(v)+4}" text-anchor="end" font-size="11" fill="#697165">${Math.round(v)}</text>`}
- if(chartType==='bar')entries.forEach(([k,v],i)=>{const x=left+i*step+step*.25,bw=Math.min(55,step*.23);svg+=`<rect x="${x}" y="${y(v.r)}" width="${bw}" height="${Math.max(0,base-y(v.r))}" rx="4" fill="${colors[0]}"><title>${esc(k)} 营收 ${money(v.r)}</title></rect><rect x="${x+bw+7}" y="${Math.min(y(v.p),base)}" width="${bw}" height="${Math.abs(base-y(v.p))}" rx="4" fill="${colors[1]}"><title>贡献利润 ${money(v.p)}</title></rect>`});
- else for(const [key,color] of [['r',colors[0]],['p',colors[1]]]){const pts=entries.map(([,v],i)=>`${left+step*(i+.5)},${y(v[key])}`);svg+=`<polyline points="${pts.join(' ')}" fill="none" stroke="${color}" stroke-width="3"/>`;entries.forEach(([k,v],i)=>svg+=`<circle cx="${left+step*(i+.5)}" cy="${y(v[key])}" r="4" fill="${color}"><title>${esc(k)} ${money(v[key])}</title></circle>`)}
- entries.forEach(([k],i)=>{if(i%Math.max(1,Math.ceil(entries.length/10))===0)svg+=`<text x="${left+step*(i+.5)}" y="247" text-anchor="middle" font-size="12" fill="#697165">${esc(k)}</text>`});return svg+'</svg><div class="legend"><span style="--c:#7c956d">含税营业额</span><span style="--c:#cd8c53">贡献利润</span></div>';
+async function act(path, data, msg) { try { const r = await api(path, data); await refresh(); if (msg) toast(msg, 'ok'); return r } catch (e) { toast(e.message, 'bad'); return null } }
+async function refresh(redraw = true) {
+  try { const r = await fetch('/api/state'); if (!r.ok) throw Error('无法连接本地服务'); S = await r.json(); if (redraw) render() }
+  catch (e) { toast(e.message + '。请确认 PetOps 服务正在运行。', 'bad') }
 }
-function forecast(rows){const by={};rows.forEach(s=>(by[s.sku]??=[]).push(s));const cards=Object.entries(by).map(([sku,rs])=>{const dates=rs.map(s=>s.date).sort(),days=Math.floor((new Date(dates.at(-1))-new Date(dates[0]))/86400000)+1;if(days<14||rs.length<5)return '';const end=new Date(dates.at(-1)),windowRows=rs.filter(s=>(end-new Date(s.date))/86400000<30),span=Math.min(days,30);return `<div class="row"><b>${esc(sku)}</b><span>下 30 天趋势外推：${Math.round(sum(windowRows,'units')/span*30)} 件 ${tag('低置信度','orange')}</span></div>`}).join('');return cards?`<div class="card pad"><h3>销量趋势参考</h3>${cards}<p class="compact">以最后记录日为窗口末日；假设渠道、流量、库存保持不变，无订单日按 0 件计入。促销与缺货会影响可靠性。</p></div>`:''}
-function saleDialog(){if(!S.products.length)return toast('请先建立商品档案');modal('录入实际销售与费用',`<form id="sale-form"><div class="form-grid">${selectfield('sku','SKU',S.products.map(p=>[p.sku,p.sku+' · '+(p.nameZh||p.nameIt)]))}${selectfield('platform','平台',sellers)}${field('date','销售日期',today(),'date','required')}${field('units','成交件数',1,'number','min="0" step="1" required')}${[['revenue','含税销售额 €'],['vatAmount','销项税金额 €'],['cogs','本批进货成本 €'],['fees','平台费用 €'],['shipping','本批物流费 €'],['ads','广告费用 €'],['refunds','退款 / 损失 €']].map(([k,l])=>field(k,l,0,'number','min="0" step="0.01" required')).join('')}<div class="notice full">填写该条记录的合计金额，不是单价。退款和销项税请使用一致口径，避免重复扣税。</div>${finishButtons()}</div></form>`);$('#sale-form').onsubmit=e=>submitForm(e,async d=>{await api('sales',d);$('#dialog').close();await refresh();toast('销售记录已保存')})}
-function deleteSale(id){modal('删除销售记录',`<p>删除后会重新计算统计结果。这条记录将从本地数据库移除。</p><button class="danger" onclick="act('delete-sale',{id:'${id}'},'已删除记录').then(r=>{if(r)$('#dialog').close()})">确认删除</button>`)}
-function settings(){const s=S.settings,c=S.capabilities;return head('YOUR LOCAL OPERATING SYSTEM','连接与设置','本机保存，使用已有的 Codex 登录与九宫格制作流程。',`<button onclick="download('/api/backup','PetOps_备份.zip')">导出完整备份</button>`)+`<div class="grid2"><div class="card pad"><h2>定价假设</h2><p class="compact">以下为初始测算值，不代表平台实际费率，请按业务情况调整。</p><form id="settings-form" onsubmit="saveSettings(event)"><div class="form-grid" style="margin-top:22px">${field('vat','含税售价中的 VAT %',s.vat,'number','min="0" max="80" step="0.1"')}${field('targetMargin','目标贡献利润率 %',s.targetMargin,'number','min="0" max="80" step="0.1"')}${field('shipping','单件物流费 €',s.shipping,'number','min="0" step="0.01"')}${field('adRate','广告预留 / 不含税收入 %',s.adRate,'number','min="0" max="80" step="0.1"')}${field('returnRate','退货预留 / 不含税收入 %',s.returnRate,'number','min="0" max="80" step="0.1"')}${sellers.map((p,i)=>field('fee'+i,p+' 平台费 / 含税售价 %',s.fees[p],'number','min="0" max="60" step="0.1"')).join('')}${textfield('style','全局统一图片风格',s.style,'full')}<div class="full"><button type="submit" class="primary">保存定价与风格</button></div></div></form></div><div><div class="card pad"><h2>本地工作引擎</h2>${[['Codex 程序',c.codex],['九宫格电商法 V1.2',c.skill],['Real-ESRGAN 高清化',c.upscaler],['裁剪与输出脚本',c.finalizer]].map(([l,ok])=>`<div class="row"><span>${l}</span>${tag(ok?'已检测到':'未找到',ok?'green':'red')}</div>`).join('')}<p class="compact">检测到程序不等于已验证生图可用。任务启动时检查 ChatGPT 登录；网络、工具权限和订阅额度以实际结果为准。</p><div class="notice" style="margin-top:18px;margin-bottom:0">${esc(c.modelStatus)}</div></div><div class="card pad"><h2>五平台数据连接</h2>${platforms.map(p=>`<div class="row"><b>${p}</b>${tag('公开网页 / 手动录入')}</div>`).join('')}<p class="compact">尚未接入商家 API。公开网页由 Codex 尝试检索；登录墙、反爬和未公开销量会保留缺失。商家 API 需要各平台授权及接口权限。</p></div><div class="card pad"><h2>数据与隐私</h2><p>数据保存在本机 SQLite。服务仅监听 127.0.0.1，不对局域网开放。调研与作图时，必要的商品资料会发送给 Codex。</p><button class="small" onclick="download('/api/export?kind=products','商品档案.csv')">导出商品档案</button></div></div></div>`}
-function saveSettings(e){return submitForm(e,async d=>{d.fees=Object.fromEntries(sellers.map((p,i)=>[p,d['fee'+i]]));await api('settings',d);await refresh();toast('设置已保存，商品目标售价已重算')})}
-async function download(url,name){try{const r=await fetch(url);if(!r.ok)throw Error('导出失败');saveBlob(await r.blob(),name)}catch(e){toast(e.message)}}
-function saveBlob(blob,name){const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name.replace(/[\\/:*?"<>|]/g,'_');a.click();setTimeout(()=>URL.revokeObjectURL(url),30000)}
-function csvEscape(v){let s=String(v??'');if(/^[=+\-@]/.test(s))s=' '+s;return '"'+s.replaceAll('"','""')+'"'}
-function downloadSchedule(){const rows=[['日期','SKU','中文名称','意大利语名称','素材状态'],...S.products.filter(p=>p.scheduledDate).sort((a,b)=>a.scheduledDate.localeCompare(b.scheduledDate)).map(p=>[p.scheduledDate,p.sku,p.nameZh,p.nameIt,p.assetsReady?'已生成':'待制作'])];saveBlob(new Blob(['\ufeff'+rows.map(r=>r.map(csvEscape).join(',')).join('\r\n')],{type:'text/csv;charset=utf-8'}),'制作排期.csv')}
-function parseCSV(text){text=text.replace(/^\uFEFF/,'');const rows=[];let row=[],cell='',quote=false;for(let i=0;i<text.length;i++){const c=text[i];if(c==='"'){if(quote&&text[i+1]==='"'){cell+='"';i++}else quote=!quote}else if(c===','&&!quote){row.push(cell);cell=''}else if((c==='\n'||c==='\r')&&!quote){if(c==='\r'&&text[i+1]==='\n')i++;row.push(cell);if(row.some(v=>v.trim()))rows.push(row);row=[];cell=''}else cell+=c}if(quote)throw Error('CSV 引号不匹配');row.push(cell);if(row.some(v=>v.trim()))rows.push(row);if(rows.length<2)throw Error('文件需要表头和至少一行数据');const keys=rows.shift().map(k=>k.trim());if(new Set(keys).size!==keys.length)throw Error('表头重复');return rows.map((r,i)=>{if(r.length!==keys.length)throw Error(`第 ${i+2} 行列数不匹配`);return Object.fromEntries(keys.map((k,j)=>[k,r[j]]))})}
-const templates={sales:'id,date,sku,platform,units,revenue,vatAmount,cogs,fees,shipping,ads,refunds',products:'sku,nameZh,nameIt,ean,brand,category,cost,stock,dimensions,weight,material,descriptionZh,descriptionIt'};
-function downloadTemplate(kind){saveBlob(new Blob(['\ufeff'+templates[kind]+'\r\n'],{type:'text/csv;charset=utf-8'}),kind+'_模板.csv')}
-function importDialog(kind){modal(kind==='sales'?'导入销售数据':'导入仓库商品',`<p>上传 UTF-8 CSV，使用下面的英文列名。商品同 SKU 会更新；销售同 id 会更新，id 留空会新增。</p><div class="notice mono" style="overflow-wrap:anywhere">${templates[kind]}</div><button onclick="downloadTemplate('${kind}')">下载空白模板</button><form id="import-form" style="margin-top:20px"><div class="field"><label for="csv-file">CSV 文件</label><input id="csv-file" type="file" accept=".csv,text/csv" required></div><p>建议先导出备份。最多 5,000 条，校验失败不会写入任何一条。</p>${finishButtons('校验并导入')}</form>`);$('#import-form').onsubmit=e=>submitForm(e,async()=>{const rows=parseCSV(await $('#csv-file').files[0].text());const r=await api('import',{kind,rows});$('#dialog').close();await refresh();toast(`已导入 ${r.count} 条`)})}
-function exportReport(){const rows=filteredSales(),doc=`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>PetOps 经营报告</title><style>body{font:16px/1.7 -apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;background:#fffef9;max-width:1000px;margin:50px auto;color:#303b32;padding:20px}h1{font-size:32px}table{border-collapse:collapse;width:100%}td,th{padding:12px;border-bottom:1px solid #e2e5d9;text-align:left}.chart{width:100%;height:300px}.legend{display:none}@media print{button{display:none}}</style><h1>PetOps Italia · 经营报告</h1><p>${esc(filters.start||'开始')} — ${esc(filters.end||'至今')} · ${esc(filters.platform||'全部平台')}</p><p>营业额 ${money(sum(rows,'revenue'))} ｜ 成交 ${sum(rows,'units')} 件 ｜ 贡献利润 ${money(sum(rows,'profit'))}</p>${rows.length?chart(rows):'<p>无数据</p>'}<table><tr><th>平台</th><th>销售件数</th><th>营业额</th><th>贡献利润</th></tr>${sellers.map(p=>{const rs=rows.filter(s=>s.platform===p);return `<tr><td>${p}</td><td>${sum(rs,'units')}</td><td>${money(sum(rs,'revenue'))}</td><td>${money(sum(rs,'profit'))}</td></tr>`}).join('')}</table><p>来源：本机录入 / 导入的 ${rows.length} 条记录。贡献利润未扣固定人工、仓租和所得税。生成时间：${esc(new Date().toLocaleString())}。</p><button onclick="print()">打印 / 保存 PDF</button></html>`;saveBlob(new Blob([doc],{type:'text/html;charset=utf-8'}),'PetOps_经营报告.html')}
-if(navs.some(n=>n[0]===location.hash.slice(1)))view=location.hash.slice(1);
-window.addEventListener('hashchange',()=>{const v=location.hash.slice(1);if(navs.some(n=>n[0]===v)&&v!==view){view=v;render()}});
-function studioProduct(p){return `<div class="live-job-slot" data-live-product="${p.id}">${liveProductMarkup(p.id)}</div>`+studioProductBase(p)}
-function jobCard(j){return jobCardBase(j)+`<div data-live-job="${j.id}">${progressMarkup(j)}</div>`}
-async function pollJobs(){
- if(pollBusy)return;pollBusy=true;
- const before=S.jobs.filter(j=>['queued','running'].includes(j.status)).map(j=>j.id);
- try{await refresh(false);renderChrome();renderLiveSlots();
-  const finished=before.some(id=>!S.jobs.some(j=>j.id===id&&['queued','running'].includes(j.status)));
-  const editing=document.activeElement?.matches('input,textarea,select');
-  if(finished&&!editing&&!$('#dialog').open)render();
-  if($('#dialog').open&&jobDialogId)showJob(jobDialogId);
- }finally{pollBusy=false}
+function go(view, id = '', sub = '') { location.hash = [view, id, sub].filter(Boolean).join('/') }
+function readHash() {
+  const [view, id = '', sub = ''] = decodeURIComponent(location.hash.slice(1)).split('/');
+  route = { view: ['studio', 'gallery', 'product', 'listing', 'settings'].includes(view) ? view : 'gallery', id, sub };
 }
-refresh();setInterval(pollJobs,4000);
-if(document.modelContext?.registerTool){try{document.modelContext.registerTool({name:'petops_list_products',title:'读取商品与排期',description:'Read saved product SKUs, schedule dates, and research status from the local workspace.',inputSchema:{type:'object',properties:{},additionalProperties:false},annotations:{readOnlyHint:true,untrustedContentHint:true},execute:async()=>{await refresh();return S.products.map(p=>({sku:p.sku,name:p.nameZh,date:p.scheduledDate,research:p.researchedAt||null}))}})}catch(e){console.warn('Optional WebMCP registration unavailable',e)}}
+function editing() { return document.activeElement?.matches('input,textarea,select') || $('#dialog').open }
+function download(url) { const a = document.createElement('a'); a.href = url; a.rel = 'noopener'; document.body.appendChild(a); a.click(); a.remove() }
+async function copyText(text, label = '内容') {
+  if (!text) return toast('没有可复制的' + label);
+  try { await navigator.clipboard.writeText(text); toast('已复制' + label, 'ok') }
+  catch { const t = document.createElement('textarea'); t.value = text; document.body.appendChild(t); t.select(); document.execCommand('copy'); t.remove(); toast('已复制' + label, 'ok') }
+}
+function readFile(f) { return new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(',')[1]); r.onerror = no; r.readAsDataURL(f) }) }
+function icon(name) {
+  const d = {
+    plus: 'M12 5v14M5 12h14', down: 'M12 4v11m0 0 4-4m-4 4-4-4M5 20h14', copy: 'M9 9h10v10H9zM5 15V5h10', edit: 'm4 20 4-1 11-11-3-3L5 16l-1 4z',
+    back: 'M15 18l-6-6 6-6', close: 'M6 6l12 12M18 6 6 18', left: 'M15 18l-6-6 6-6', right: 'm9 18 6-6-6-6', spark: 'M12 3v4m0 10v4M3 12h4m10 0h4M6 6l2.5 2.5m7 7L18 18M6 18l2.5-2.5m7-7L18 6',
+    upload: 'M12 16V4m0 0-4 4m4-4 4 4M5 20h14', image: 'M4 5h16v14H4zM4 15l4-4 4 4 3-3 5 5', check: 'm5 12 4 4 10-10', trash: 'M5 7h14M10 7V4h4v3M7 7l1 13h8l1-13', table: 'M4 5h16v14H4zM4 10h16M10 5v14', robot: 'M7 9h10v9H7zM12 5v4M9 13h.01M15 13h.01'
+  }[name];
+  return `<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="${d}"/></svg>`;
+}
+function pill(text, tone = '') { return `<span class="pill ${tone}">${esc(text)}</span>` }
+function empty(title, text, action = '') { return `<div class="empty"><div class="empty-art">${icon('image')}</div><h3>${title}</h3><p>${text}</p>${action}</div>` }
+function thumb(p, cls = '') { const src = cover(p); return src ? `<img class="${cls}" src="${esc(src)}" alt="" loading="lazy">` : `<div class="${cls} noimg">${icon('image')}</div>` }
+
+/* ---------------------------------------------------------------- chrome */
+function renderNav() {
+  const current = route.view === 'product' ? 'gallery' : route.view;
+  $('#nav').innerHTML = VIEWS.map(([v, t], i) => `<a href="#${v}" class="${current === v ? 'active' : ''}" ${current === v ? 'aria-current="page"' : ''}><small>${i + 1}</small>${t}</a>`).join('');
+  const active = S.jobs.filter(ACTIVE).length;
+  $('#task-count').textContent = active; $('#task-count').classList.toggle('live', active > 0);
+}
+function render() {
+  renderNav();
+  const views = { studio, gallery, product: productPage, listing: listingView, settings: settingsView };
+  $('#app').innerHTML = views[route.view]();
+  renderTasks(); renderLive();
+  if (ui.box) renderLightbox();
+  document.title = 'PetOps Studio · ' + ({ studio: '作图', gallery: '画廊', product: '画廊', listing: '上架', settings: '设置' }[route.view]);
+}
+function toggleTasks(force) { ui.tasksOpen = force ?? !ui.tasksOpen; $('#tasks').hidden = !ui.tasksOpen; $('#tasks-button').setAttribute('aria-expanded', ui.tasksOpen); renderTasks() }
+function renderTasks() {
+  if (!ui.tasksOpen) return;
+  const jobs = [...S.jobs.filter(ACTIVE), ...S.jobs.filter(j => !ACTIVE(j))].slice(0, 40);
+  $('#tasks').innerHTML = `<div class="drawer-head"><h2>任务</h2><button class="icon" aria-label="关闭" onclick="toggleTasks(false)">${icon('close')}</button></div>` +
+    (jobs.length ? jobs.map(j => jobCard(j, true)).join('') : `<p class="muted pad">还没有任务。作图、生成文案和自动存草稿都会出现在这里。</p>`);
+}
+function progressBar(j) {
+  const pg = j.progress || { percent: 0, label: j.message };
+  const bad = ['failed', 'interrupted', 'cancelled'].includes(j.status);
+  const time = pg.elapsedSeconds == null ? '' : pg.elapsedSeconds < 60 ? pg.elapsedSeconds + ' 秒' : Math.floor(pg.elapsedSeconds / 60) + ' 分 ' + pg.elapsedSeconds % 60 + ' 秒';
+  return `<div class="progress ${pg.indeterminate ? 'indeterminate' : ''} ${bad ? 'bad' : ''}" role="progressbar" aria-valuemin="0" aria-valuemax="100" ${pg.indeterminate ? '' : `aria-valuenow="${pg.percent}"`}><i style="width:${pg.indeterminate ? 35 : pg.percent}%"></i></div>
+  <div class="progress-meta"><span>${esc(pg.label || '')}</span><span>${ACTIVE(j) && time ? '已运行 ' + time : time ? '用时 ' + time : ''}${pg.indeterminate || !ACTIVE(j) ? '' : ' · ' + pg.percent + '%'}</span></div>`;
+}
+function jobCard(j, compact = false) {
+  const p = product(j.productId), tone = j.status === 'completed' ? 'ok' : ACTIVE(j) ? 'info' : 'bad';
+  return `<div class="job ${compact ? 'compact' : ''}" data-job="${j.id}">
+    <div class="job-top"><b>${esc(KIND[j.kind] || j.kind)}${j.platform ? ' · ' + esc(j.platform) : ''}</b>${pill(JOB_STATUS[j.status] || j.status, tone)}</div>
+    <p class="job-name">${p ? `<a href="#product/${p.id}">${esc(displayName(p))}</a>` : esc(j.sku)} <span class="muted">${esc(new Date(j.createdAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }))}</span></p>
+    <div data-live-job="${j.id}">${progressBar(j)}</div>
+    ${!ACTIVE(j) && j.status !== 'completed' ? `<p class="job-msg">${esc(j.message)}</p>` : j.status === 'completed' && j.kind !== 'images' ? `<p class="job-msg">${esc(j.message)}</p>` : ''}
+    <div class="job-actions">
+      ${ACTIVE(j) ? `<button class="small" onclick="cancelJob('${j.id}')">取消</button>` : ''}
+      ${['failed', 'interrupted', 'cancelled'].includes(j.status) ? `<button class="small" onclick="retryJob('${j.id}')">重试</button>` : ''}
+      ${j.folder ? `<a class="small-link" target="_blank" href="${file(j.folder.replaceAll('\\', '/') + '/events.jsonl')}">日志</a>` : ''}
+    </div></div>`;
+}
+function renderLive() {
+  $$('[data-live-job]').forEach(el => { const j = S.jobs.find(x => x.id === el.dataset.liveJob); if (j) el.innerHTML = progressBar(j) });
+  $$('[data-live-card]').forEach(el => { const j = activeJob(el.dataset.liveCard); el.innerHTML = j ? `<div class="card-progress">${progressBar(j)}</div>` : '' });
+}
+async function startJob(id, kind, extra = '', asset = '', platform = '') {
+  const r = await act('jobs', { id, kind, extra, asset, platform }, { images: '已开始作图，约 15–40 分钟。进度见任务列表', copy: '正在生成三平台文案，通常 1–3 分钟', edit: '已提交局部修改', publish: '已开始自动填写 AliExpress，完成后保存为草稿' }[kind]);
+  return r;
+}
+function cancelJob(id) { act('cancel-job', { id }, '已请求取消') }
+function retryJob(id) { const j = S.jobs.find(x => x.id === id); if (j) startJob(j.productId, j.kind, j.extra, j.asset, j.platform) }
+
+/* ---------------------------------------------------------------- product form & import */
+function field(name, label, value = '', attrs = '', hint = '') { return `<label class="field"><span>${label}</span><input name="${name}" value="${esc(value ?? '')}" ${attrs}>${hint ? `<small>${hint}</small>` : ''}</label>` }
+function area(name, label, value = '', attrs = '', hint = '') { return `<label class="field wide"><span>${label}</span><textarea name="${name}" ${attrs}>${esc(value ?? '')}</textarea>${hint ? `<small>${hint}</small>` : ''}</label>` }
+function modal(title, body, wide = false) {
+  const d = $('#dialog'); d.className = wide ? 'wide' : '';
+  d.innerHTML = `<div class="dialog-head"><h2>${title}</h2><button class="icon" aria-label="关闭" onclick="$('#dialog').close()">${icon('close')}</button></div>${body}`;
+  if (!d.open) d.showModal();
+}
+function editProduct(id) {
+  const p = id ? product(id) : {};
+  modal(id ? '编辑商品资料' : '新建商品', `<form id="product-form" class="form-grid">
+    ${field('sku', 'SKU *', p.sku, 'required maxlength="80" autocomplete="off"')}
+    ${field('ean', 'EAN 条码', p.ean, 'inputmode="numeric"', p.barcodeCheck?.status === 'invalid' ? '⚠ ' + esc(p.barcodeCheck.message) : '')}
+    ${field('nameZh', '中文名称', p.nameZh)}${field('nameIt', '意大利语名称', p.nameIt, '', '可留空，AI 文案会生成')}
+    ${field('brand', '品牌', p.brand, '', '无品牌留空')}${field('category', '品类', p.category, 'placeholder="例如：猫抓板、宠物窝"')}
+    ${field('dimensions', '尺寸（单一尺寸商品）', p.dimensions, 'placeholder="45 × 55 × 40 cm"')}${field('weight', '重量', p.weight, 'placeholder="850 g"')}
+    ${field('material', '材质', p.material)}${field('color', '颜色', p.color)}
+    ${field('petModel', '宠物模特（同一商品所有图片用同一只动物）', p.petModel, 'placeholder="例如：奶油色泰迪，约 4 kg；留空由 AI 选定并记住"', '')}${field('stock', '库存', p.stock, 'type="number" min="0" step="1"')}${field('cost', '税前进货价 €', p.cost, 'type="number" min="0" step="0.01"')}
+    ${area('sizeChart', '尺码表（多个尺码时每行一个，会原样标在尺寸图上）', p.sizeChart, 'rows="4" placeholder="S: 背长 25 cm, 胸围 36 cm&#10;M: 背长 30 cm, 胸围 42 cm&#10;也可以写英寸，例如 12&quot; — 系统会自动换算成厘米"', '填了尺寸或尺码表，尺寸图、参数图和尺码指南都会标出具体数字；不填只画测量示意。')}
+    ${area('sellingPoints', '卖点 / 作图要点', p.sellingPoints, 'rows="3" placeholder="例如：可拆洗外套；防滑底；适合 5kg 以下猫咪"', '作图和文案都会用到。只写已确认的事实。')}
+    ${area('packageContents', '包装内容', p.packageContents, 'rows="2" placeholder="例如：1 × 猫窝，1 × 靠垫"')}
+    ${id ? '' : `<label class="field wide"><span>商品实拍图（可多选）</span><input type="file" name="files" accept="image/png,image/jpeg,image/webp" multiple></label>`}
+    <div class="form-actions wide">${id ? `<button type="button" class="danger-link" onclick="deleteProduct('${id}')">删除商品</button>` : '<span></span>'}<div><button type="button" onclick="$('#dialog').close()">取消</button><button class="primary" type="submit">保存</button></div></div>
+  </form>`, true);
+  $('#product-form').onsubmit = async e => {
+    e.preventDefault(); const btn = e.submitter; btn.disabled = true;
+    try {
+      const d = Object.fromEntries(new FormData(e.target)); delete d.files; if (id) d.id = id;
+      const r = await api('products', d);
+      const files = e.target.files?.files ? [...e.target.files.files] : [];
+      for (const f of files) await api('reference', { id: r.id, data: await readFile(f) });
+      $('#dialog').close(); await refresh(); toast('商品已保存', 'ok');
+      if (!id && route.view === 'studio') go('studio', r.id);
+    } catch (err) { toast(err.message, 'bad') } finally { btn.disabled = false }
+  };
+}
+function deleteProduct(id) {
+  const p = product(id);
+  modal('删除商品', `<p>确定删除 <b>${esc(displayName(p))}</b>（${esc(p.sku)}）？商品记录和文案会从数据库移除；已生成的图片文件仍保留在 data/runs 目录中。</p>
+    <div class="form-actions"><span></span><div><button onclick="$('#dialog').close()">取消</button><button class="danger" onclick="act('delete-product',{id:'${id}'},'商品已删除').then(r=>{if(r){$('#dialog').close();go('gallery')}})">删除</button></div></div>`);
+}
+function importDialog() {
+  modal('从排期表导入商品', `<p>选择 <b>上新排期与销售统计表.xlsx</b>。系统读取“上新排期”工作表：EAN、商品简介、中文简介、进货价、库存，以及商品 ID、电商原价、日常促销价和三个平台的上架状态（完成 = 已上架）。</p>
+    <ul class="tips"><li>按 EAN 匹配：已有商品只更新表格里有值的格子，不会清空网页中已填写的内容。</li><li>“备注”含“示例”的行会跳过。</li><li>也可以直接选你的 01_商品进价表。</li></ul>
+    <form id="import-form"><label class="drop"><input type="file" name="xlsx" accept=".xlsx" required><span>${icon('table')} 选择 .xlsx 文件</span></label>
+    <div class="form-actions"><span></span><div><button type="button" onclick="$('#dialog').close()">取消</button><button class="primary" type="submit">导入</button></div></div></form>`);
+  $('#import-form').onsubmit = async e => {
+    e.preventDefault(); const btn = e.submitter; btn.disabled = true;
+    try {
+      const f = e.target.xlsx.files[0]; if (!f) throw Error('请选择文件');
+      const r = await api('import-xlsx', { data: await readFile(f) });
+      await refresh();
+      modal('导入完成', `<p>新建 <b>${r.created}</b> 个商品，更新 <b>${r.updated}</b> 个，写入平台上架信息 <b>${r.listingUpdates}</b> 条。</p>${r.skipped.length ? `<p class="muted">跳过 ${r.skipped.length} 行：</p><ul class="tips">${r.skipped.map(s => `<li>${esc(s)}</li>`).join('')}</ul>` : ''}<div class="form-actions"><span></span><button class="primary" onclick="$('#dialog').close()">好的</button></div>`);
+    } catch (err) { toast(err.message, 'bad') } finally { btn.disabled = false }
+  };
+}
+
+/* ---------------------------------------------------------------- 1. studio */
+function studioState(p) {
+  if (activeJob(p.id, ['images'])) return 'running';
+  return p.assetsReady ? 'done' : 'todo';
+}
+function studio() {
+  const filters = [['all', '全部'], ['todo', '待作图'], ['running', '制作中'], ['done', '已完成']];
+  const list = S.products.filter(p => (ui.studioFilter === 'all' || studioState(p) === ui.studioFilter) && matches(p));
+  let p = product(route.id) || list[0] || S.products[0];
+  if (p) route.id = p.id;
+  return `<div class="page studio">
+  <section class="queue">
+    <div class="queue-head"><h2>作图队列</h2><button class="small primary" onclick="editProduct()">${icon('plus')}新建</button></div>
+    <input class="search" placeholder="搜索 SKU / 名称 / EAN" value="${esc(ui.search)}" oninput="searchInput(this.value)">
+    <div class="segmented">${filters.map(([v, t]) => `<button class="${ui.studioFilter === v ? 'on' : ''}" onclick="ui.studioFilter='${v}';render()">${t} <small>${S.products.filter(x => v === 'all' || studioState(x) === v).length}</small></button>`).join('')}</div>
+    ${ui.picked.size ? `<div class="batchbar"><span>已选 ${ui.picked.size} 个</span><button class="small primary" onclick="batchImages()">批量作图</button><button class="small" onclick="ui.picked.clear();render()">清除</button></div>` : ''}
+    <div class="queue-list">${list.length ? list.map(x => `<div class="queue-item ${p && x.id === p.id ? 'active' : ''}">
+      <input type="checkbox" aria-label="选择 ${esc(x.sku)}" ${ui.picked.has(x.id) ? 'checked' : ''} onchange="this.checked?ui.picked.add('${x.id}'):ui.picked.delete('${x.id}');render()">
+      <a href="#studio/${x.id}">${thumb(x, 'qthumb')}<span><b>${esc(displayName(x))}</b><small>${esc(x.sku)} · ${x.references.length} 张实拍</small></span>${{ running: pill('制作中', 'info'), done: pill(x.assets.length + ' 张', 'ok'), todo: x.references.length ? pill('可开始') : pill('缺实拍', 'warn') }[studioState(x)]}</a>
+      <div class="queue-live" data-live-card="${x.id}"></div></div>`).join('') : `<p class="muted pad">${S.products.length ? '这个分类下没有商品。' : '还没有商品。新建一个，或在画廊从排期表导入。'}</p>`}</div>
+  </section>
+  <section class="workspace">${p ? studioProduct(p) : empty('从一个商品开始', '新建商品并上传 1–4 张实拍图（正面、侧面、细节、包装），就可以按 AliExpress 规范生成整套素材。', `<button class="primary" onclick="editProduct()">${icon('plus')}新建商品</button> <button onclick="importDialog()">${icon('table')}从排期表导入</button>`)}</section>
+  </div>`;
+}
+function searchInput(v) { ui.search = v; render(); const el = $('.search'); if (el) { el.focus(); el.setSelectionRange(v.length, v.length) } }
+function matches(p) { const q = ui.search.trim().toLowerCase(); return !q || [p.sku, p.nameZh, p.nameIt, p.ean, p.category].join(' ').toLowerCase().includes(q) }
+function engineProblems() {
+  const c = S.capabilities, miss = [];
+  if (!c.codex) miss.push('本机 Codex'); if (!c.skill) miss.push('九宫格技能'); if (!c.finalizer) miss.push('裁剪脚本'); if (!c.upscaler) miss.push('Real-ESRGAN');
+  return miss;
+}
+function studioProduct(p) {
+  const job = activeJob(p.id, ['images']), last = jobsOf(p.id, 'images')[0], miss = engineProblems();
+  const facts = [['宠物模特', p.petModel], ['品牌', p.brand], ['尺寸', p.dimensions], ['材质', p.material], ['颜色', p.color], ['重量', p.weight]].filter(f => f[1]);
+  return `<div class="ws-head"><div><p class="eyebrow">${esc(p.sku)}${p.category ? ' · ' + esc(p.category) : ''}</p><h1>${esc(displayName(p))}</h1><p class="muted">${esc(p.nameIt || '意大利语名称待生成')}</p></div>
+    <div class="row-actions"><button onclick="editProduct('${p.id}')">${icon('edit')}编辑资料</button>${p.assetsReady ? `<button onclick="go('product','${p.id}')">${icon('image')}在画廊查看</button>` : ''}</div></div>
+  <div class="step"><div class="step-no">1</div><div class="step-body"><h3>商品实拍图 <small>${p.references.length}/8 · 第一张为主参考</small></h3>
+    <div class="refs">${p.references.map((r, i) => `<figure class="ref"><img src="${esc(file(r))}" alt="参考图 ${i + 1}">${i === 0 ? '<span class="badge">主参考</span>' : `<button class="ref-btn" title="设为主参考" onclick="primaryRef('${p.id}',${i})">设为主</button>`}<button class="ref-x" aria-label="删除参考图" onclick="removeRef('${p.id}',${i})">${icon('close')}</button></figure>`).join('')}
+    ${p.references.length < 8 ? `<label class="drop ref-drop" ondragover="event.preventDefault();this.classList.add('over')" ondragleave="this.classList.remove('over')" ondrop="dropRefs(event,'${p.id}')"><input type="file" accept="image/png,image/jpeg,image/webp" multiple onchange="uploadRefs('${p.id}',this.files)"><span>${icon('upload')}拖入或点击上传</span></label>` : ''}</div>
+    <p class="hint">建议：正面清晰图 + 侧面 / 背面 + 材质细节 + 包装标签。实拍越清楚，生成的商品越准确。</p></div></div>
+  <div class="step"><div class="step-no">2</div><div class="step-body"><h3>商品要点 <button class="link" onclick="editProduct('${p.id}')">编辑</button></h3>
+    ${facts.length ? `<div class="facts">${facts.map(([k, v]) => `<span><small>${k}</small>${esc(v)}</span>`).join('')}</div>` : ''}
+    ${sizeBlock(p)}
+    <p class="${p.sellingPoints ? '' : 'muted'}">${esc(p.sellingPoints || '还没有填写卖点。写上已确认的卖点（例如“可拆洗”“防滑底”），图片上的文案会更准确；未知信息不会被编造。')}</p>${p.brand ? '' : '<p class="hint">首图可以展示品牌：如果商品或包装上有品牌，请在资料里填写；不填则不印品牌。</p>'}</div></div>
+  ${colorStep(p)}
+  <div class="step"><div class="step-no">4</div><div class="step-body"><h3>生成 AliExpress 素材包 <small>主图 6 · 营销图 2 · 备用 2 · 详情 9${p.variantsEnabled || p.sizesEnabled ? ' · ' + [p.variantsEnabled && '颜色', p.sizesEnabled && '尺寸'].filter(Boolean).join(' + ') + ' SKU 图（AI 识别）' : ''}</small></h3>
+    <div class="chips">${PROMPT_CHIPS.map(c => `<button class="chip" onclick="addChip('${c}')">＋ ${c}</button>`).join('')}</div>
+    <label class="field wide"><span>本次补充要求（可选）</span><textarea id="extra-prompt" rows="2" placeholder="例如：场景用米色沙发和木地板，保持商品真实颜色。"></textarea></label>
+    <details class="style-note"><summary>统一风格（设置中修改）</summary><p>${esc(S.settings.style)}</p></details>
+    ${miss.length ? `<div class="alert warn">缺少：${miss.join('、')}。请在<a href="#settings">设置</a>中检查。</div>` : ''}
+    <div class="row-actions"><button class="primary big" ${job || !p.references.length || miss.length ? 'disabled' : ''} onclick="generateImages('${p.id}')">${icon('spark')}${job ? '正在制作…' : p.assetsReady ? '重新生成素材包' : '生成素材包'}</button>
+    <span class="muted small-text">按 AliExpress 官方素材规范：主图九宫格 + 详情九宫格 + 3:4 营销图 → 裁切 → Real-ESRGAN。${p.petModel ? '所有图片使用同一只宠物：' + esc(p.petModel) : '宠物模特由 AI 选定，完成后自动记住，下次沿用。'}</span></div>
+    ${job ? `<div class="live-box">${jobCard(job)}</div>` : last && ['failed', 'interrupted', 'cancelled'].includes(last.status) ? `<div class="live-box">${jobCard(last)}</div>` : ''}
+  </div></div>
+  ${p.assetsReady ? `<div class="step done"><div class="step-no">${icon('check')}</div><div class="step-body"><h3>最新成品 <button class="link" onclick="go('product','${p.id}')">在画廊查看全部 →</button></h3>
+    <div class="mini-grid">${p.assets.map((a, i) => `<button class="mini" onclick="openBox('${p.id}',${i})"><img src="${esc(file(a.path))}" alt="${esc(a.name)}" loading="lazy"></button>`).join('')}</div>
+    <p class="hint">${p.assetReview ? '✓ 已确认可用于上架' : '请在画廊中逐张检查，确认后才能自动存草稿。'}</p></div></div>` : ''}`;
+}
+function sizeBlock(p) {
+  const sizes = [p.dimensions, p.sizeChart].filter(Boolean).join('\n');
+  return sizes ? `<div class="size-box"><small>尺寸 / 尺码表 · 会原样标在 06 尺寸图、D3 参数图和 D8 尺码指南上</small><pre>${esc(sizes)}</pre></div>`
+    : `<div class="alert warn">还没有填尺寸或尺码表：尺寸图只能画测量示意，不会标数字。<button class="link" onclick="editProduct('${p.id}')">去填写</button></div>`;
+}
+function colorStep(p) {
+  const colors = (p.colors || []).map(c => c.name), sizes = (p.sizes || []).map(z => z.name);
+  const toggle = (key, on, label, msg) => `<label class="switch"><input type="checkbox" ${on ? 'checked' : ''} onchange="act('products',{id:'${p.id}',${key}:this.checked},this.checked?'已开启${msg}':'已关闭${msg}')"> ${label}</label>`;
+  const found = (title, list) => list.length ? `<div class="color-chips"><small>${title}</small>${list.map((n, i) => `<span class="pill ${i ? '' : 'ok'}">${i + 1}. ${esc(n)}</span>`).join('')}</div>` : '';
+  const any = p.variantsEnabled || p.sizesEnabled;
+  return `<div class="step"><div class="step-no">3</div><div class="step-body"><h3>颜色与尺寸 <small>可选 · AI 从实拍图识别</small></h3>
+    ${toggle('variantsEnabled', p.variantsEnabled, '多颜色：为每个颜色生成一张白底 SKU 图', '多颜色')}
+    ${p.variantsEnabled ? found('上次识别到的颜色：', colors) : ''}
+    ${toggle('sizesEnabled', p.sizesEnabled, '多尺寸：为每个尺寸生成一张标好尺寸的 SKU 图', '多尺寸')}
+    ${p.sizesEnabled ? found('上次识别到的尺寸：', sizes) : ''}
+    <p class="hint">${any ? `不需要手动填写：AI 读取实拍图里的色块和尺寸表（例如供应商卡片）。尺码表里已填的尺寸优先。主图用第 1 个颜色；SKU 图先放在第三张图里（5 张），超过 5 张自动加第四张九宫格，最多 14 张。` : '都不勾选时，按实拍图本身的颜色作图，不生成 SKU 图。'}</p>
+  </div></div>`;
+}
+function generateImages(id) { startJob(id, 'images', $('#extra-prompt')?.value || '') }
+function addChip(text) { const t = $('#extra-prompt'); t.value = (t.value ? t.value.replace(/[，,\s]*$/, '，') : '') + text; t.focus() }
+async function uploadRefs(id, files) {
+  const list = [...files].filter(f => /image\/(png|jpeg|webp)/.test(f.type));
+  if (!list.length) return toast('请选择 PNG、JPEG 或 WebP 图片', 'bad');
+  try { for (const f of list) { if (f.size > 15 * 1024 * 1024) throw Error(f.name + ' 超过 15MB'); await api('reference', { id, data: await readFile(f) }) } await refresh(); toast(`已上传 ${list.length} 张实拍图`, 'ok') }
+  catch (e) { toast(e.message, 'bad'); refresh() }
+}
+function dropRefs(e, id) { e.preventDefault(); uploadRefs(id, e.dataTransfer.files) }
+function primaryRef(id, i) { const refs = [...product(id).references]; refs.unshift(...refs.splice(i, 1)); act('reference-order', { id, references: refs }, '已设为主参考') }
+function removeRef(id, i) { const refs = product(id).references.filter((_, k) => k !== i); act('reference-order', { id, references: refs, remove: true }, '已移除参考图') }
+async function batchImages() {
+  let ok = 0;
+  for (const id of ui.picked) { try { await api('jobs', { id, kind: 'images' }); ok++ } catch (e) { toast(product(id)?.sku + '：' + e.message, 'bad') } }
+  ui.picked.clear(); await refresh(); if (ok) toast(`${ok} 个商品已加入作图队列，将依次制作`, 'ok');
+}
+
+/* ---------------------------------------------------------------- 2. gallery */
+function galleryState(p) { return { all: true, images: p.assetsReady, todo: !p.assetsReady, pending: p.assetsReady && listedCount(p) < 3, listed: listedCount(p) === 3 } }
+function gallery() {
+  const filters = [['all', '全部'], ['images', '有图片'], ['todo', '待作图'], ['pending', '待上架'], ['listed', '三平台已上架']];
+  const list = S.products.filter(p => galleryState(p)[ui.galleryFilter] && matches(p));
+  const done = S.products.filter(p => p.assetsReady).length;
+  return `<div class="page">
+  <div class="page-head"><div><h1>画廊</h1><p class="muted">${S.products.length} 个商品 · ${done} 个已出图 · ${S.products.filter(p => listedCount(p) === 3).length} 个三平台已上架</p></div>
+    <div class="row-actions"><button onclick="importDialog()">${icon('table')}从排期表导入</button><button class="primary" onclick="editProduct()">${icon('plus')}新建商品</button></div></div>
+  <div class="toolbar"><input class="search" placeholder="搜索 SKU / 名称 / EAN / 品类" value="${esc(ui.search)}" oninput="searchInput(this.value)">
+    <div class="segmented">${filters.map(([v, t]) => `<button class="${ui.galleryFilter === v ? 'on' : ''}" onclick="ui.galleryFilter='${v}';render()">${t}</button>`).join('')}</div></div>
+  ${list.length ? `<div class="cards">${list.map(card).join('')}</div>` : S.products.length ? empty('没有符合条件的商品', '换个筛选或关键词试试。') : empty('画廊还是空的', '新建商品或从排期表导入，做好的图片和上架信息都会汇总在这里。', `<button class="primary" onclick="editProduct()">${icon('plus')}新建商品</button> <button onclick="importDialog()">${icon('table')}从排期表导入</button>`)}
+  </div>`;
+}
+function statusDots(p) { return `<div class="dots">${S.platforms.map(s => { const st = p.listing?.[s]?.status || '待上架'; return `<span class="dot ${STATUS_TONE[st]}" title="${s}：${st}">${SHORT[s]}</span>` }).join('')}</div>` }
+function card(p) {
+  return `<a class="card" href="#product/${p.id}">
+    <div class="card-img">${thumb(p)}${p.assetsReady ? `<span class="count-badge">${p.assets.length} 张</span>` : ''}<div class="card-live" data-live-card="${p.id}"></div></div>
+    <div class="card-body"><b>${esc(displayName(p))}</b><small>${esc(p.sku)}${p.category ? ' · ' + esc(p.category) : ''}</small>
+    <div class="card-foot">${p.assetsReady ? (p.assetReview ? pill('图片已确认', 'ok') : pill('图片待检查', 'warn')) : pill(p.references.length ? '待作图' : '缺实拍')}${statusDots(p)}</div></div></a>`;
+}
+
+/* ---------------------------------------------------------------- product page (gallery detail) */
+function productPage() {
+  const p = product(route.id);
+  if (!p) return `<div class="page">${empty('商品不存在', '可能已被删除。', `<button onclick="go('gallery')">返回画廊</button>`)}</div>`;
+  const tab = ['images', 'listing', 'info'].includes(route.sub) ? route.sub : 'images';
+  const pendingEdits = jobsOf(p.id, 'edit').filter(j => j.status === 'completed' && j.edited && !Object.values(p.assetOverrides || {}).includes(j.edited));
+  return `<div class="page">
+  <div class="detail-head"><button class="icon" aria-label="返回画廊" onclick="go('gallery')">${icon('back')}</button>${thumb(p, 'head-thumb')}
+    <div class="grow"><p class="eyebrow">${esc(p.sku)}${p.ean ? ' · EAN ' + esc(p.ean) : ''}</p><h1>${esc(displayName(p))}</h1><p class="muted">${esc(p.nameIt || '')}</p></div>
+    <div class="row-actions"><button onclick="editProduct('${p.id}')">${icon('edit')}资料</button><button onclick="go('studio','${p.id}')">${icon('spark')}作图</button><button onclick="go('listing','${p.id}')">${icon('robot')}上架</button>${p.assetsReady ? `<button class="primary" onclick="download('/api/bundle?id=${p.id}')">${icon('down')}下载资料包</button>` : ''}</div></div>
+  <div data-live-card="${p.id}"></div>
+  <div class="tabs">${[['images', `图片 ${p.assets.length ? '<small>' + p.assets.length + '</small>' : ''}`], ['listing', '上架信息'], ['info', '商品资料']].map(([v, t]) => `<a href="#product/${p.id}/${v}" class="${tab === v ? 'on' : ''}">${t}</a>`).join('')}</div>
+  ${tab === 'images' ? imagesTab(p, pendingEdits) : tab === 'listing' ? listingSummary(p) : infoTab(p)}
+  </div>`;
+}
+function imagesTab(p, pendingEdits) {
+  if (!p.assetsReady) return empty('还没有成品图', p.references.length ? '实拍图已就绪，去作图页生成素材包。' : '先上传商品实拍图，再生成上架图。', `<button class="primary" onclick="go('studio','${p.id}')">${icon('spark')}去作图</button>`);
+  const group = (g, title, note) => { const items = p.assets.map((a, i) => [a, i]).filter(([a]) => a.group === g); return items.length ? `<section class="img-section"><div class="section-head"><h3>${title} <small>${items.length}</small></h3><span class="muted">${note}</span></div><div class="grid9">${items.map(([a, i]) => tile(p, a, i)).join('')}</div></section>` : '' };
+  const groups = [['main', '主图', 'AliExpress 主图，按 01 → 06 顺序上传：正面 · 侧面 · 背面 · 细节 · 场景 · 尺寸'], ['marketing', '营销图', '1:1 白底（无文字）+ 3:4 场景'], ['variants', '颜色 SKU 图', '每个颜色一张白底图，上架时对应颜色款式'], ['sizes', '尺寸 SKU 图', '每个尺寸一张，图上标好该尺寸的数字'], ['extra', '备用图', '可替换主图，或用于其他平台'], ['detail', '详情图', '手机端详情模块，按 D1 → D9 放入商品描述'], ['listing', '商品图（旧版）', '01 白底主图适合 Amazon 主图；09 为 TikTok 场景图']];
+  return `<div class="review-bar ${p.assetReview ? 'ok' : ''}"><label><input type="checkbox" ${p.assetReview ? 'checked' : ''} onchange="act('review',{id:'${p.id}',approved:this.checked},this.checked?'已确认图片可用于上架':'已取消确认')"> 我已逐张检查：商品外观、颜色、意大利语文字都正确，可用于上架</label><span class="muted">点击图片放大，← → 切换</span></div>
+  ${pendingEdits.length ? `<section class="img-section"><div class="section-head"><h3>修改结果待确认 <small>${pendingEdits.length}</small></h3></div><div class="edits">${pendingEdits.map(j => { const a = p.assets.find(x => x.path === j.asset || x.originalPath === j.asset); return `<div class="edit-card"><div class="compare"><figure><img src="${esc(file(j.asset))}" alt=""><figcaption>原图</figcaption></figure><figure><img src="${esc(file(j.edited))}" alt=""><figcaption>修改后</figcaption></figure></div><p>${esc(j.extra)}</p><div class="row-actions">${a ? `<button class="small primary" onclick="act('adopt-edit',{id:'${p.id}',jobId:'${j.id}'},'已采用修改图')">采用修改图</button>` : '<span class="muted">原图已更换，无法采用</span>'}<a class="small-link" href="${esc(file(j.edited))}?download=1">下载</a></div></div>` }).join('')}</div></section>` : ''}
+  ${groups.map(([g, t, n]) => group(g, t, g === 'detail' && p.assets.some(a => a.group === 'listing') ? 'AliExpress 商品描述中使用' : n)).join('')}
+  ${p.boards.length ? `<details class="img-section boards"><summary><h3>九宫格原图 <small>${p.boards.length}</small></h3></summary><div class="grid2">${p.boards.map(b => `<a href="${esc(file(b))}" target="_blank"><img src="${esc(file(b))}" alt="九宫格原图" loading="lazy"></a>`).join('')}</div></details>` : ''}`;
+}
+function tile(p, a, i) {
+  return `<figure class="tile ${a.ratio === "3:4" ? "tall" : ""}"><button class="tile-img" onclick="openBox('${p.id}',${i})" aria-label="放大 ${esc(a.name)}"><img src="${esc(file(a.path))}" alt="${esc(a.name)}" loading="lazy"></button>
+    <figcaption><span>${esc(a.name.replace(/\.(png|jpe?g)$/i, ''))}</span>${a.edited ? pill('已修改', 'info') : ''}</figcaption><small>${esc(a.use)}</small>
+    <div class="tile-actions"><a href="${esc(file(a.path))}?download=1" title="下载" aria-label="下载">${icon('down')}</a><button title="局部修改" aria-label="局部修改" onclick="openBox('${p.id}',${i},true)">${icon('edit')}</button></div></figure>`;
+}
+function listingSummary(p) {
+  return `<div class="summary-grid">${S.platforms.map(s => { const l = p.listing[s], lim = S.limits[s] || {}; return `<section class="summary-card">
+    <div class="section-head"><h3>${s}</h3>${pill(l.status, STATUS_TONE[l.status])}</div>
+    ${l.title ? `<div class="copyable"><label>标题 <small>${l.title.length}/${lim.title}</small></label><p class="title-text">${esc(l.title)}</p><p class="muted">${esc(l.titleZh)}</p><button class="icon small" aria-label="复制标题" onclick="copyText(product('${p.id}').listing['${s}'].title,'标题')">${icon('copy')}</button></div>
+    ${l.bullets.length ? `<div class="copyable"><label>卖点</label><ul>${l.bullets.map(b => `<li>${esc(b)}</li>`).join('')}</ul><button class="icon small" aria-label="复制卖点" onclick="copyText(product('${p.id}').listing['${s}'].bullets.join('\\n'),'卖点')">${icon('copy')}</button></div>` : ''}
+    <div class="copyable"><label>描述</label><p class="desc">${esc(l.description)}</p><button class="icon small" aria-label="复制描述" onclick="copyText(product('${p.id}').listing['${s}'].description,'描述')">${icon('copy')}</button></div>
+    ${(l.attributes || []).length ? `<div class="copyable"><label>商品属性</label><dl class="attr-list">${l.attributes.map(a => `<dt>${esc(a.name)}${a.nameZh ? ' · ' + esc(a.nameZh) : ''}</dt><dd>${esc(a.value)}</dd>`).join('')}</dl><button class="icon small" aria-label="复制属性" onclick="copyText(product('${p.id}').listing['${s}'].attributes.map(a=>a.name+': '+a.value).join('\\n'),'属性')">${icon('copy')}</button></div>` : ''}
+    ${l.keywords ? `<div class="copyable"><label>后台关键词</label><p>${esc(l.keywords)}</p><button class="icon small" aria-label="复制关键词" onclick="copyText(product('${p.id}').listing['${s}'].keywords,'关键词')">${icon('copy')}</button></div>` : ''}` : `<p class="muted">还没有文案。</p>`}
+    <div class="kv"><span>原价 <b>${money(l.price)}</b></span><span>促销价 <b>${money(l.promoPrice)}</b></span></div>
+    ${l.url ? `<a href="${esc(l.url)}" target="_blank" rel="noreferrer">查看平台商品 ↗</a>` : l.productId ? `<p class="muted">商品 / 草稿 ID：${esc(l.productId)}</p>` : ''}
+    <button class="small" onclick="go('listing','${p.id}','${s}')">编辑 ${s} →</button></section>` }).join('')}</div>
+    ${p.toVerify?.length ? `<div class="alert warn"><b>上架前需核实：</b>${p.toVerify.map(esc).join('；')}</div>` : ''}`;
+}
+function infoTab(p) {
+  const rows = [['SKU', p.sku], ['EAN', p.ean], ['中文名称', p.nameZh], ['意大利语名称', p.nameIt], ['品牌', p.brand], ['品类', p.category], ['尺寸', p.dimensions], ['重量', p.weight], ['材质', p.material], ['颜色', p.variantsEnabled ? (p.colors || []).map(c => c.name).join('、') : p.color], ['尺码表', p.sizeChart], ['识别到的尺寸', p.sizesEnabled ? (p.sizes || []).map(z => z.name).join('、') : ''], ['宠物模特', p.petModel], ['库存', p.stock], ['税前进货价', p.cost == null ? '' : money(p.cost)], ['卖点', p.sellingPoints], ['包装内容', p.packageContents], ['意大利语简介', p.descriptionIt], ['中文简介', p.descriptionZh]];
+  return `<div class="info-grid"><dl class="facts-list">${rows.map(([k, v]) => `<dt>${k}</dt><dd>${v === '' || v == null ? '<span class="muted">—</span>' : esc(v)}</dd>`).join('')}</dl>
+  <section><h3>实拍参考图</h3><div class="refs">${p.references.map(r => `<a class="ref" href="${esc(file(r))}" target="_blank"><img src="${esc(file(r))}" alt=""></a>`).join('') || '<p class="muted">暂无</p>'}</div>
+  <h3>任务记录</h3>${jobsOf(p.id).slice(0, 12).map(j => jobCard(j, true)).join('') || '<p class="muted">暂无</p>'}</section></div>`;
+}
+
+/* ---------------------------------------------------------------- lightbox */
+function openBox(id, index, edit = false) { ui.box = { id, index, edit }; renderLightbox(); document.addEventListener('keydown', boxKeys) }
+function closeBox() { ui.box = null; $('#lightbox').hidden = true; $('#lightbox').innerHTML = ''; document.removeEventListener('keydown', boxKeys) }
+function boxKeys(e) {
+  if (!ui.box || e.target.matches('textarea,input')) return;
+  if (e.key === 'Escape') closeBox();
+  if (e.key === 'ArrowRight') moveBox(1);
+  if (e.key === 'ArrowLeft') moveBox(-1);
+}
+function moveBox(step) { const p = product(ui.box.id); ui.box.index = (ui.box.index + step + p.assets.length) % p.assets.length; ui.box.edit = false; renderLightbox() }
+function renderLightbox() {
+  const p = product(ui.box.id); if (!p || !p.assets.length) return closeBox();
+  const a = p.assets[ui.box.index] || p.assets[0], running = jobsOf(p.id, 'edit').find(j => ACTIVE(j) && (j.asset === a.path || j.asset === a.originalPath));
+  const lb = $('#lightbox'); lb.hidden = false;
+  lb.innerHTML = `<div class="lb-backdrop" onclick="closeBox()"></div>
+  <div class="lb-panel" role="dialog" aria-label="图片预览">
+    <div class="lb-stage"><button class="lb-nav left" aria-label="上一张" onclick="moveBox(-1)">${icon('left')}</button><img src="${esc(file(a.path))}" alt="${esc(a.name)}"><button class="lb-nav right" aria-label="下一张" onclick="moveBox(1)">${icon('right')}</button></div>
+    <div class="lb-side"><div class="lb-top"><span>${ui.box.index + 1} / ${p.assets.length}</span><button class="icon" aria-label="关闭" onclick="closeBox()">${icon('close')}</button></div>
+      <h3>${esc(a.name)}</h3><p class="muted">${esc(a.use)} · ${esc(a.size || '1000×1000')}</p>
+      <div class="row-actions"><a class="button" href="${esc(file(a.path))}?download=1">${icon('down')}下载</a>${a.edited ? `<button onclick="act('revert-asset',{id:'${p.id}',originalPath:'${esc(a.originalPath)}'},'已恢复原图')">恢复原图</button>` : ''}</div>
+      <div class="lb-edit"><h4>局部修改</h4><p class="muted">只改你描述的部分，商品和其他区域保持不变；原图始终保留。</p>
+        <textarea id="lb-edit-text" rows="4" placeholder="例如：把右上角的文字改成 “Lavabile in lavatrice”，其他不变。" ${ui.box.edit ? 'autofocus' : ''}></textarea>
+        <button class="primary" ${running ? 'disabled' : ''} onclick="submitEdit('${p.id}','${esc(a.path)}')">${running ? '修改中…' : '生成修改版本'}</button>
+        ${running ? `<div class="live-box">${jobCard(running, true)}</div>` : ''}</div>
+      <div class="lb-strip">${p.assets.map((x, i) => `<button class="${i === ui.box.index ? 'on' : ''}" onclick="ui.box.index=${i};renderLightbox()"><img src="${esc(file(x.path))}" alt="" loading="lazy"></button>`).join('')}</div>
+    </div></div>`;
+  if (ui.box.edit) setTimeout(() => $('#lb-edit-text')?.focus(), 30);
+}
+async function submitEdit(id, path) { const t = $('#lb-edit-text').value.trim(); if (!t) return toast('请描述要修改的内容'); await startJob(id, 'edit', t, path); if (ui.box) renderLightbox() }
+
+/* ---------------------------------------------------------------- 3. listing */
+function listingView() {
+  const p = product(route.id);
+  return p ? listingEditor(p) : listingBoard();
+}
+function listingBoard() {
+  const filters = [['all', '全部'], ['todo', '未开始'], ['partial', '部分上架'], ['done', '三平台已上架']];
+  const pass = p => ({ all: true, todo: listedCount(p) === 0, partial: listedCount(p) > 0 && listedCount(p) < 3, done: listedCount(p) === 3 })[ui.listingFilter];
+  const list = S.products.filter(p => pass(p) && matches(p));
+  return `<div class="page">
+  <div class="page-head"><div><h1>上架中心</h1><p class="muted">三平台文案、价格与上架状态。点击平台状态进入编辑。</p></div>
+    <div class="row-actions"><button onclick="go('settings')">${icon('robot')}自动上架说明</button></div></div>
+  <div class="toolbar"><input class="search" placeholder="搜索 SKU / 名称" value="${esc(ui.search)}" oninput="searchInput(this.value)">
+    <div class="segmented">${filters.map(([v, t]) => `<button class="${ui.listingFilter === v ? 'on' : ''}" onclick="ui.listingFilter='${v}';render()">${t}</button>`).join('')}</div></div>
+  ${list.length ? `<div class="table-wrap"><table class="board"><thead><tr><th>商品</th><th>图片</th><th>文案</th>${S.platforms.map(s => `<th>${s}</th>`).join('')}<th></th></tr></thead><tbody>
+  ${list.map(p => `<tr><td><a class="prod" href="#listing/${p.id}">${thumb(p, 'qthumb')}<span><b>${esc(displayName(p))}</b><small>${esc(p.sku)}</small></span></a></td>
+    <td>${p.assetsReady ? (p.assetReview ? pill('已确认', 'ok') : pill('待检查', 'warn')) : pill('未出图')}</td>
+    <td>${activeJob(p.id, ['copy']) ? pill('生成中', 'info') : hasCopy(p) ? pill('已有', 'ok') : pill('未生成')}</td>
+    ${S.platforms.map(s => { const l = p.listing[s]; return `<td><a class="status-cell" href="#listing/${p.id}/${encodeURIComponent(s)}">${pill(l.status, STATUS_TONE[l.status])}<small>${l.promoPrice || l.price ? money(l.promoPrice || l.price) : '未定价'}</small></a></td>` }).join('')}
+    <td><a class="button small" href="#listing/${p.id}">编辑</a></td></tr>`).join('')}</tbody></table></div>` : empty('没有商品', S.products.length ? '换个筛选试试。' : '先在画廊新建或导入商品。')}
+  </div>`;
+}
+function listingEditor(p) {
+  const platform = S.platforms.includes(route.sub) ? route.sub : 'AliExpress', l = p.listing[platform], lim = S.limits[platform] || {};
+  const copyJob = activeJob(p.id, ['copy']), lastCopy = jobsOf(p.id, 'copy')[0];
+  const counter = (key, value, limit, useBytes) => limit ? `<small class="counter" data-counter="${key}" data-limit="${limit}" data-bytes="${useBytes ? 1 : 0}">${useBytes ? bytes(value) : (value || '').length}/${limit}${useBytes ? ' 字节' : ''}</small>` : '';
+  const bulletsCount = lim.bullets || 0;
+  const bullets = Array.from({ length: bulletsCount }, (_, i) => l.bullets[i] || '');
+  const legacy = p.assets.some(a => a.group === 'listing');
+  const by = (g, pre = '') => p.assets.filter(a => a.group === g && a.name.startsWith(pre));
+  const order = legacy ? { AliExpress: '主图 01–08 按顺序上传；详情图 D1–D9 放入商品描述。', Amazon: '01 白底图作为主图，02–08 作为附图。', 'TikTok Shop': '01–09 作为商品图，09 为场景营销图。' }[platform]
+    : { AliExpress: '主图 01–06 按顺序上传；营销图放 1:1 白底和 3:4 场景两个位置；颜色 SKU 图（V01…）、尺寸 SKU 图（S01…）对应各款式；详情图 D1–D9 放入描述。', Amazon: 'Amazon 主图必须纯白底无文字：用营销图 1:1 白底做主图，主图 02–06 做附图。', 'TikTok Shop': '主图 01–06 作为商品图，3:4 场景图可作为竖版展示图。' }[platform];
+  const images = legacy ? p.assets.filter(a => platform === 'AliExpress' ? true : a.group === 'listing').filter(a => platform !== 'Amazon' || !a.name.startsWith('09'))
+    : platform === 'AliExpress' ? [...by('main'), ...by('marketing'), ...by('variants'), ...by('sizes'), ...by('detail')]
+    : platform === 'Amazon' ? [...by('marketing', 'white'), ...by('main').slice(1), ...by('extra', '07')]
+    : [...by('main'), ...by('marketing', 'scene')];
+  const shortName = a => ({ white_1x1: '白底', scene_3x4: '3:4' }[a.name.replace(/\.\w+$/, '')] || a.name.slice(0, 3).replace(/_$/, ''));
+  return `<div class="page">
+  <div class="detail-head"><button class="icon" aria-label="返回上架中心" onclick="go('listing')">${icon('back')}</button>${thumb(p, 'head-thumb')}
+    <div class="grow"><p class="eyebrow">${esc(p.sku)}${p.ean ? ' · EAN ' + esc(p.ean) : ''}</p><h1>${esc(displayName(p))}</h1><p class="muted">${esc(p.nameIt || '')}</p></div>
+    <div class="row-actions"><button onclick="go('product','${p.id}','listing')">在画廊查看</button>${p.assetsReady ? `<button onclick="download('/api/bundle?id=${p.id}')">${icon('down')}资料包</button>` : ''}</div></div>
+  <div class="ai-bar"><div><b>${icon('spark')} AI 生成三平台意大利语文案</b><p class="muted">根据商品资料和实拍图，一次写好 AliExpress / Amazon / TikTok 的标题、卖点、描述${hasCopy(p) ? '。会覆盖三个平台当前的标题、卖点、描述和关键词（价格与状态不变）' : ''}。</p></div>
+    <input id="copy-extra" placeholder="补充要求（可选），如：强调可机洗" ${copyJob ? 'disabled' : ''}><button class="primary" ${copyJob ? 'disabled' : ''} onclick="generateCopy('${p.id}')">${copyJob ? '生成中…' : hasCopy(p) ? '重新生成' : '生成文案'}</button></div>
+  ${copyJob ? `<div class="live-box">${jobCard(copyJob)}</div>` : lastCopy && lastCopy.status === 'failed' ? `<div class="live-box">${jobCard(lastCopy)}</div>` : ''}
+  ${p.toVerify?.length ? `<div class="alert warn"><b>上架前需核实：</b>${p.toVerify.map(esc).join('；')}</div>` : ''}
+  <div class="tabs">${S.platforms.map(s => `<a href="#listing/${p.id}/${encodeURIComponent(s)}" class="${s === platform ? 'on' : ''}">${s} ${pill(p.listing[s].status, STATUS_TONE[p.listing[s].status])}</a>`).join('')}</div>
+  <div class="editor">
+    <form class="editor-main" id="listing-form" data-id="${p.id}" data-platform="${esc(platform)}" oninput="listingInput(event)" onchange="listingInput(event,true)" onsubmit="event.preventDefault()">
+      <div class="save-state" id="save-state">${l.updatedAt ? '已保存 · ' + new Date(l.updatedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '修改会自动保存'}</div>
+      <div class="field wide"><div class="label-row"><span>标题</span>${counter('title', l.title, lim.title)}<button type="button" class="icon small" aria-label="复制标题" onclick="copyText($('[name=title]').value,'标题')">${icon('copy')}</button></div><textarea name="title" rows="2">${esc(l.title)}</textarea></div>
+      <label class="field wide"><span>中文对照（仅供核对，不上传）</span><input name="titleZh" value="${esc(l.titleZh)}"></label>
+      ${bulletsCount ? `<div class="field wide"><div class="label-row"><span>卖点（${bulletsCount} 条）</span><button type="button" class="icon small" aria-label="复制全部卖点" onclick="copyText($$('[name=bullet]').map(x=>x.value).filter(Boolean).join('\\n'),'卖点')">${icon('copy')}</button></div>
+        ${bullets.map((b, i) => `<div class="bullet"><span>${i + 1}</span><textarea name="bullet" rows="2">${esc(b)}</textarea>${counter('bullet' + i, b, lim.bullet)}</div>`).join('')}</div>` : ''}
+      <div class="field wide"><div class="label-row"><span>商品描述</span>${counter('description', l.description, lim.description)}<button type="button" class="icon small" aria-label="复制描述" onclick="copyText($('[name=description]').value,'描述')">${icon('copy')}</button></div><textarea name="description" rows="9">${esc(l.description)}</textarea></div>
+      ${lim.keywords ? `<div class="field wide"><div class="label-row"><span>后台搜索关键词</span>${counter('keywords', l.keywords, lim.keywords, true)}<button type="button" class="icon small" aria-label="复制关键词" onclick="copyText($('[name=keywords]').value,'关键词')">${icon('copy')}</button></div><input name="keywords" value="${esc(l.keywords)}"></div>` : ''}
+      <div class="field wide"><div class="label-row"><span>商品属性（每行一条：名称: 值）</span><button type="button" class="icon small" aria-label="复制属性" onclick="copyText($('[name=attributes]').value,'属性')">${icon('copy')}</button></div><textarea name="attributes" rows="5" placeholder="Materiale: Acrilico&#10;Tipo di animale: Cane">${esc((l.attributes || []).map(a => a.name + ': ' + a.value).join('\n'))}</textarea><small>AI 生成文案时一起生成，只包含已核实的属性；上架时对照平台表单填写。</small></div>
+      <div class="form-grid">
+        <label class="field"><span>原价 €（含税）</span><input name="price" type="number" min="0" step="0.01" value="${l.price ?? ''}"></label>
+        <label class="field"><span>促销价 €</span><input name="promoPrice" type="number" min="0" step="0.01" value="${l.promoPrice ?? ''}"></label>
+        <label class="field"><span>上架状态</span><select name="status">${S.statuses.map(s => `<option ${s === l.status ? 'selected' : ''}>${s}</option>`).join('')}</select></label>
+        <label class="field"><span>平台商品 ID / 草稿 ID</span><input name="productId" value="${esc(l.productId)}"></label>
+        <label class="field wide"><span>平台商品链接</span><input name="url" type="url" placeholder="https://" value="${esc(l.url)}"></label>
+      </div>
+    </form>
+    <aside class="editor-side">
+      ${autoPanel(p, platform)}
+      <section class="side-card"><h3>本平台图片 <small>${images.length}</small></h3><p class="muted">${order}</p>
+        ${images.length ? `<div class="side-grid">${images.map(a => `<a href="${esc(file(a.path))}?download=1" title="下载 ${esc(a.name)}"><img src="${esc(file(a.path))}" alt="${esc(a.name)}" loading="lazy"><span>${esc(shortName(a))}</span></a>`).join('')}</div><button class="small" onclick="download('/api/bundle?id=${p.id}')">${icon('down')}下载全部（资料包）</button>` : `<p>还没有图片。<a href="#studio/${p.id}">去作图 →</a></p>`}</section>
+      <section class="side-card"><h3>商品事实</h3><dl class="mini-facts">${[['EAN', p.ean], ['尺寸', p.dimensions], ['重量', p.weight], ['材质', p.material], ['库存', p.stock]].map(([k, v]) => `<dt>${k}</dt><dd>${v === '' || v == null ? '<span class="muted">—</span>' : esc(v)}</dd>`).join('')}</dl><button class="small" onclick="editProduct('${p.id}')">${icon('edit')}编辑资料</button></section>
+    </aside>
+  </div></div>`;
+}
+function autoPanel(p, platform) {
+  const c = S.capabilities, l = p.listing[platform];
+  if (platform !== 'AliExpress') return `<section class="side-card auto"><h3>${icon('robot')} 自动上架</h3><p>${platform} 的自动上架需要官方接口：${platform === 'Amazon' ? 'Amazon SP-API（Listings Items API），需在 Seller Central 注册私有开发者应用并自授权。' : 'TikTok Shop Partner Center 的 Custom App，需申请商品管理权限并通过审核。'}</p><p class="muted">授权到位后可接入本系统。现在可用“复制”按钮和资料包手动上架，完成后把状态改为“已上架”。</p><a class="small-link" href="#settings">查看完整方案 →</a></section>`;
+  const checks = [['图片已确认', p.assetsReady && p.assetReview], ['标题与描述', !!(l.title && l.description)], ['售价与库存', !!(l.price && p.stock)], ['发布技能', c.publishSkill], ['Codex 浏览器（Playwright MCP）', c.playwright]];
+  const ready = checks.every(x => x[1]), job = activeJob(p.id, ['publish']), last = jobsOf(p.id, 'publish')[0];
+  return `<section class="side-card auto"><h3>${icon('robot')} 自动存草稿 <span class="pill info">实验</span></h3>
+    <p class="muted">Codex 打开你已登录的卖家后台，按 ecom-aliexpress-publish 技能填写表单，<b>只保存草稿，不会发布</b>。欧盟责任人和制造商需你手动选择。</p>
+    <ul class="checks">${checks.map(([t, ok]) => `<li class="${ok ? 'ok' : ''}">${ok ? icon('check') : '○'} ${t}</li>`).join('')}</ul>
+    <button class="primary" ${!ready || job ? 'disabled' : ''} onclick="startJob('${p.id}','publish','','','AliExpress')">${job ? '正在填写…' : '自动存为 AliExpress 草稿'}</button>
+    ${!c.playwright ? `<p class="hint">未检测到 Playwright MCP。<a href="#settings">查看配置步骤</a></p>` : ''}
+    ${job ? jobCard(job, true) : last && last.status !== 'completed' ? jobCard(last, true) : ''}</section>`;
+}
+function generateCopy(id) { startJob(id, 'copy', $('#copy-extra')?.value || '') }
+function listingInput(e, immediate = false) {
+  const form = $('#listing-form'); if (!form) return;
+  const t = e.target;
+  if (t.dataset && t.name) {
+    const c = t.name === 'bullet' ? form.querySelectorAll('[data-counter^=bullet]')[[...form.querySelectorAll('[name=bullet]')].indexOf(t)] : form.querySelector(`[data-counter="${t.name}"]`);
+    if (c) { const n = c.dataset.bytes === '1' ? bytes(t.value) : t.value.length, lim = +c.dataset.limit; c.textContent = `${n}/${lim}${c.dataset.bytes === '1' ? ' 字节' : ''}`; c.classList.toggle('over', n > lim) }
+  }
+  $('#save-state').textContent = '未保存…';
+  clearTimeout(ui.saveTimer);
+  ui.saveTimer = setTimeout(saveListing, immediate ? 0 : 800);
+}
+async function saveListing() {
+  const form = $('#listing-form'); if (!form) return;
+  const id = form.dataset.id, platform = form.dataset.platform, f = new FormData(form);
+  const fields = { title: f.get('title'), titleZh: f.get('titleZh'), description: f.get('description'), price: f.get('price'), promoPrice: f.get('promoPrice'), status: f.get('status'), productId: f.get('productId'), url: f.get('url') };
+  if (form.querySelector('[name=bullet]')) fields.bullets = f.getAll('bullet');
+  if (form.querySelector('[name=keywords]')) fields.keywords = f.get('keywords');
+  if (form.querySelector('[name=attributes]')) fields.attributes = f.get('attributes');
+  try {
+    const p = await api('listing', { id, platform, fields });
+    const i = S.products.findIndex(x => x.id === id); if (i >= 0) S.products[i] = { ...S.products[i], listing: p.listing };
+    $('#save-state').textContent = '已保存 · ' + new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+    $('#save-state').className = 'save-state';
+  } catch (e) { $('#save-state').textContent = '未保存：' + e.message; $('#save-state').className = 'save-state bad' }
+}
+
+/* ---------------------------------------------------------------- settings */
+function settingsView() {
+  const s = S.settings, c = S.capabilities;
+  const row = (label, ok, note = '') => `<div class="check-row"><span>${label}${note ? `<small>${note}</small>` : ''}</span>${pill(ok ? '已就绪' : '未检测到', ok ? 'ok' : 'bad')}</div>`;
+  return `<div class="page narrow">
+  <div class="page-head"><div><h1>设置</h1><p class="muted">数据保存在本机 data 目录，服务只监听 127.0.0.1。</p></div><div class="row-actions"><button onclick="download('/api/backup')">${icon('down')}导出完整备份</button></div></div>
+  <form class="panel" id="settings-form"><h2>风格</h2>
+    <label class="field wide"><span>图片统一风格（作图时附加）</span><textarea name="style" rows="3">${esc(s.style)}</textarea></label>
+    <label class="field wide"><span>文案语气（意大利语文案生成时附加）</span><textarea name="copyStyle" rows="2">${esc(s.copyStyle)}</textarea></label>
+    <h2>AliExpress 默认值</h2><div class="form-grid">
+    <label class="field"><span>发货仓库</span><input name="aeWarehouse" value="${esc(s.aeWarehouse)}"></label>
+    <label class="field"><span>运费模板</span><input name="aeShippingTemplate" value="${esc(s.aeShippingTemplate)}"></label></div>
+    <label class="field wide"><span>售后 & 服务提示（详情图 D7 只会使用这里写的内容，意大利语）</span><textarea name="servicePoints" rows="3" placeholder="例如：Spedizione dal magazzino in Italia; Assistenza clienti in italiano">${esc(s.servicePoints || '')}</textarea><small>只写你确实提供的服务。留空时 D7 只放中性提示（例如“尺码有疑问请先咨询”），不会编造退货期限或保修。</small></label>
+    <h2>Codex</h2><label class="field wide"><span>Codex 模型（可选）</span><input name="codexModel" value="${esc(s.codexModel || '')}" placeholder="留空 = 使用 ~/.codex/config.toml 的默认模型"><small>如果任务报错“model is not supported when using Codex with a ChatGPT account”，在这里填一个你的账号可用的模型名。</small></label>
+    <div class="form-actions"><span></span><button class="primary" type="submit">保存设置</button></div></form>
+  <section class="panel"><h2>本机引擎</h2>
+    ${row('Codex 程序', c.codex, '使用你的 ChatGPT 登录，不需要 API Key')}${row('九宫格电商法技能', c.skill)}${row('裁剪与输出脚本', c.finalizer)}${row('Real-ESRGAN 高清化', c.upscaler)}
+    ${row('ecom-aliexpress-publish 技能', c.publishSkill)}${row('Codex Playwright MCP（浏览器自动化）', c.playwright, '每 5 分钟检测一次')}</section>
+  <section class="panel" id="auto"><h2>三平台自动上架：可行性与路线</h2>
+    <div class="route"><h3>AliExpress · 现在可用（实验）</h3><p>路线：Codex + Playwright MCP 操作你已登录的卖家后台，按 ecom-aliexpress-publish 技能填表并<b>保存草稿</b>，人工检查后再发布。不需要平台审批，但页面改版会导致失败，需要维护。</p>
+      <p>配置步骤（一次）：</p><ol><li>在终端运行 <code>npm install -g @playwright/mcp@latest</code> 和 <code>npx playwright install chromium</code></li>
+      <li>在 <code>~/.codex/config.toml</code> 添加：<pre>[mcp_servers.playwright]
+command = "npx"
+args = ["-y", "@playwright/mcp@latest", "--browser=chromium", "--user-data-dir=${esc('C:/Users/你的用户名/.pw-profile')}"]</pre></li>
+      <li>运行 <code>codex mcp list</code> 确认出现 playwright；然后用这个浏览器配置手动登录一次卖家后台（本系统从不输入密码）。</li></ol>
+      <p class="muted">备选：AliExpress 批量上传表格——你的 ecom-json-to-upload-xlsx 技能可以把资料包中的 listing.json 填进官方模板；图片需先有可访问的 URL。</p></div>
+    <div class="route"><h3>Amazon.it · 可行，需要授权</h3><p>官方 Selling Partner API 的 Listings Items API（putListingsItem）可以创建和更新商品，图片通过 URL 提交。需要专业卖家账号，在 Seller Central 注册<b>私有开发者</b>应用并自授权。接入前要为你的品类拉取 Product Type 定义做字段映射；图片需要公网 URL（可用图床或对象存储）。</p></div>
+    <div class="route"><h3>TikTok Shop 意大利 · 可行，需要审批</h3><p>TikTok Shop Partner Center 创建 Custom App，申请商品管理权限，审核通过后可用 Product API 上传图片、创建商品。审批通常数个工作日，意大利站点的具体类目属性需按接口返回的类目规则填写。</p></div>
+    <p class="muted">建议顺序：先用 AliExpress 草稿自动化跑通（你的主平台，不用审批）→ 同时申请 Amazon SP-API 私有开发者 → 再申请 TikTok Custom App。授权下来后，本系统的 listing 数据结构已经可以直接映射到三个接口。</p></section>
+  </div>`;
+}
+document.addEventListener('submit', e => {
+  if (e.target.id !== 'settings-form') return;
+  e.preventDefault(); act('settings', Object.fromEntries(new FormData(e.target)), '设置已保存');
+});
+
+/* ---------------------------------------------------------------- boot */
+async function poll() {
+  if (ui.pollBusy) return; ui.pollBusy = true;
+  const before = S.jobs.filter(ACTIVE).map(j => j.id);
+  try {
+    await refresh(false);
+    const finished = before.some(id => !S.jobs.some(j => j.id === id && ACTIVE(j)));
+    if (finished && !editing()) render(); else { renderNav(); renderTasks(); renderLive() }
+  } finally { ui.pollBusy = false; setTimeout(poll, S.jobs.some(ACTIVE) ? 3000 : 10000) }
+}
+window.addEventListener('hashchange', () => { readHash(); closeBox(); window.scrollTo(0, 0); render() });
+document.addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 's' && $('#listing-form')) { e.preventDefault(); clearTimeout(ui.saveTimer); saveListing() }
+});
+readHash();
+refresh().then(() => setTimeout(poll, 3000));

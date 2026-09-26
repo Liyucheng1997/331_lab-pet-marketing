@@ -1,3 +1,4 @@
 # Web server and SQLite use the Python standard library.
-# Pillow is used to verify completed image dimensions.
+# Pillow verifies completed image dimensions; openpyxl reads the 排期 workbook and builds the templates.
 Pillow>=10
+openpyxl>=3.1

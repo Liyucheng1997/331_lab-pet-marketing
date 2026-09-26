@@ -15,3 +15,8 @@ venv/
 .pytest_cache/
 .DS_Store
 Thumbs.db
+excel/
+
+# Product images and listing packages stay local
+上架商品/
+原始图片/
